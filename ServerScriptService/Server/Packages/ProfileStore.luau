@@ -182,9 +182,6 @@ local MAX_MESSAGE_QUEUE = 1000 -- Max messages saved in a profile that were sent
 
 ----- Dependencies -----
 
--- local Util = require(game.ReplicatedStorage.Shared.Util)
--- local Signal = Util.Signal
-
 local Signal do
 
 	local FreeRunnerThread
@@ -315,8 +312,12 @@ local IssueQueue = {} -- {issue_time, ...}
 
 local DataStoreService = game:GetService("DataStoreService")
 local MessagingService = game:GetService("MessagingService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+
+local Logger = require(ReplicatedStorage.Shared.Util.Logger)
+local log      = Logger.new("ProfileStore")
 
 local PlaceId = game.PlaceId
 local JobId = game.JobId
@@ -422,13 +423,13 @@ local function ReconcileTable(target, template)
 end
 
 local function RegisterError(error_message, store_name, profile_key) -- Called when a DataStore API call errors
-	warn(`[{script.Name}]: DataStore API error (STORE:{store_name}; KEY:{profile_key}) - {tostring(error_message)}`)
+	log:error("DataStore API error (STORE:{}; KEY:{}) - {}", store_name, profile_key, error_message)
 	table.insert(IssueQueue, os.clock()) -- Adding issue time to queue
 	OnError:Fire(tostring(error_message), store_name, profile_key)
 end
 
 local function RegisterOverwrite(store_name, profile_key) -- Called when a corrupted profile is loaded
-	warn(`[{script.Name}]: Invalid profile was overwritten (STORE:{store_name}; KEY:{profile_key})`)
+	log:error("Invalid profile was overwritten (STORE:{}; KEY:{})", store_name, profile_key)
 	OnOverwrite:Fire(store_name, profile_key)
 end
 
@@ -609,7 +610,7 @@ local function UpdateAsync(profile_store, profile_key, transform_params, is_user
 					end)
 
 					if success == false and type(error_message) == "string" and string.find(error_message, "not valid") ~= nil then
-						warn(`[{script.Name}]: Passed version argument is not valid; Traceback:\n` .. debug.traceback())
+						warn(`[{script.Name}]: Passed version argument is not valid`)
 					end
 
 				else
@@ -1096,7 +1097,7 @@ end
 function Profile:AddUserId(user_id) -- Associates user_id with profile (GDPR compliance)
 
 	if type(user_id) ~= "number" or user_id % 1 ~= 0 then
-		warn(`[{script.Name}]: Invalid UserId argument for :AddUserId() ({tostring(user_id)}); Traceback:\n` .. debug.traceback())
+		log:fatal("Invalid UserId argument for :AddUserId() ({})", user_id)
 		return
 	end
 
@@ -1113,7 +1114,7 @@ end
 function Profile:RemoveUserId(user_id) -- Removes user_id association with profile (safe function)
 
 	if type(user_id) ~= "number" or user_id % 1 ~= 0 then
-		warn(`[{script.Name}]: Invalid UserId argument for :RemoveUserId() ({tostring(user_id)}); Traceback:\n` .. debug.traceback())
+		log:fatal("Invalid UserId argument for :RemoveUserId() ({})", (user_id))
 		return
 	end
 
@@ -1176,8 +1177,7 @@ function Profile:Save()
 	end
 
 	if self:IsActive() == false then
-		warn(`[{script.Name}]: Attempted saving an inactive profile (STORE:{self.ProfileStore.Name}; KEY:{self.Key});`
-			.. ` Traceback:\n` .. debug.traceback())
+		log:error("Attempted saving an inactive profile (STORE:{}; KEY:{})}", self.ProfileStore.Name, self.Key)
 		return
 	end
 
@@ -2083,7 +2083,7 @@ if IsStudio == true then
 		local no_internet_access = status == false and string.find(message, "ConnectFail", 1, true) ~= nil
 
 		if no_internet_access == true then
-			warn(`[{script.Name}]: No internet access - check your network connection`)
+			log:warn(`No internet access - check your network connection`)
 		end
 
 		if status == false and
@@ -2092,10 +2092,10 @@ if IsStudio == true then
 				no_internet_access == true) then -- No internet access
 
 			new_state = if no_internet_access == true then "NoInternet" else "NoAccess"
-			print(`[{script.Name}]: Roblox API services unavailable - data will not be saved`)
+			log:fatal(`Roblox API services unavailable - data will not be saved`)
 		else
 			new_state = "Access"
-			print(`[{script.Name}]: Roblox API services available - data will be saved`)
+			log:info(`Roblox API services available - data will be saved`)
 		end
 
 		DataStoreState = new_state
@@ -2159,7 +2159,6 @@ RunService.Heartbeat:Connect(function()
 			ProfileStore.IsCriticalState = true
 			ProfileStore.OnCriticalToggle:Fire(true)
 			CriticalStateStart = os.clock()
-			warn(`[{script.Name}]: Entered critical state`)
 		end
 	else
 		if #IssueQueue >= CRITICAL_STATE_ERROR_COUNT then
@@ -2167,7 +2166,6 @@ RunService.Heartbeat:Connect(function()
 		elseif os.clock() - CriticalStateStart > CRITICAL_STATE_EXPIRE then
 			ProfileStore.IsCriticalState = false
 			ProfileStore.OnCriticalToggle:Fire(false)
-			warn(`[{script.Name}]: Critical state ended`)
 		end
 	end
 
