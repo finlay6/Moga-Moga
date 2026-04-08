@@ -1,66 +1,63 @@
--- ReplicatedStorage/Shared/Types/EconomyTypes.lua
---
--- All types used by EconomyService and its callers.
--- Import this in any module that deals with economy data.
+--!strict
+-- ReplicatedStorage/Shared/Types/EconomyTypes.luau
+
+--[[
+	EconomyTypes
+
+	Single source of truth for every type used across the Economy layer.
+	No logic lives here — purely structural contracts.
+]]
 
 local EconomyTypes = {}
 
--- ─── Currency Types ───────────────────────────────────────────────────────────
+-- ─── Currency ─────────────────────────────────────────────────────────────────
 
+-- The set of valid currency identifiers.
+-- Stored as a string union so Luau can type-check callsites.
 export type CurrencyType = "Cash" | "Gems"
 
--- ─── Transaction ─────────────────────────────────────────────────────────────
--- Immutable record of a single economy operation.
--- Stored in memory per-player for debugging.
+-- ─── Contexts ─────────────────────────────────────────────────────────────────
 
-export type Transaction = {
-	id          : string,        -- unique ID: userId_timestamp_counter
-	currencyType: CurrencyType,
-	amount      : number,        -- positive = earn, negative = spend
-	balanceBefore: number,
-	balanceAfter : number,
-	source      : string,        -- EconomyConstants.Source value
-	metadata    : { [string]: any }?,  -- optional extra context (quest ID, item ID, etc.)
-	timestamp   : number,        -- os.time()
-}
-
--- ─── Transaction Result ───────────────────────────────────────────────────────
--- Returned by every earn/spend call. Always check .ok before using .balance.
-
-export type TransactionResult = {
-	ok           : boolean,
-	balance      : number,       -- new balance after transaction (or current if failed)
-	amountActual : number,       -- actual amount applied (may differ if capped)
-	reason       : string?,      -- failure reason if ok == false
-	transaction  : Transaction?, -- the record if ok == true
-}
-
--- ─── Multiplier Context ───────────────────────────────────────────────────────
--- Passed to earnCash so callers can control which multipliers apply.
-
+-- Passed to EarnCash / EarnGems.
+-- Controls which multipliers are applied and what gets written to the audit trail.
 export type EarnContext = {
-	applyVIP     : boolean?,   -- default true
-	applySale    : boolean?,   -- default true
-	applyCustom  : number?,    -- additional one-off multiplier (e.g. wheel bonus)
-	source       : string,     -- required — one of EconomyConstants.Source
-	metadata     : { [string]: any }?,
+	source      : string,   -- human-readable origin: "balloon", "daily_reward", "admin"
+	applyVIP    : boolean?, -- default true — set false to bypass VIP multiplier
+	applySale   : boolean?, -- default true — set false to bypass global sale
+	applyCustom : number?,  -- optional one-off multiplier (e.g. 2.0 for double-cash event)
+	metadata    : { [string]: any }?, -- arbitrary extra data written into the Transaction
 }
 
--- ─── Spend Context ────────────────────────────────────────────────────────────
-
+-- Passed to SpendCash / SpendGems.
 export type SpendContext = {
 	source   : string,
 	metadata : { [string]: any }?,
 }
 
--- ─── Player Economy Snapshot ─────────────────────────────────────────────────
--- What gets written to Replica and read by the client.
+-- ─── Transaction ──────────────────────────────────────────────────────────────
 
-export type EconomySnapshot = {
-	Cash        : number,
-	Gems        : number,
-	TotalEarned : number,
-	TotalSpent  : number,
+-- One entry in a player's audit trail.
+-- Written by EconomyTransactionService, read by admin tools / analytics.
+export type Transaction = {
+	id            : string,             -- server-unique identifier
+	currencyType  : CurrencyType,
+	amount        : number,             -- signed delta (positive = earn, negative = spend)
+	balanceBefore : number,
+	balanceAfter  : number,
+	source        : string,
+	timestamp     : number,             -- os.time()
+	metadata      : { [string]: any }?,
+}
+
+-- ─── Results ──────────────────────────────────────────────────────────────────
+
+-- Returned by every public EconomyService write call.
+export type TransactionResult = {
+	ok          : boolean,
+	balance     : number,             -- balance after the transaction (or current balance on failure)
+	amountActual: number,             -- real delta applied (may differ from requested if clamped)
+	reason      : string?,            -- failure reason key — nil on success
+	transaction : Transaction?,       -- populated only on success
 }
 
 return EconomyTypes

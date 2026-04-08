@@ -1,100 +1,117 @@
 --!strict
--- ServerScriptService/Server/Util/VIPRoller.luau
+-- ServerScriptService/Server/Services/Player/VIP/VIPRoller.luau
+
+--[[
+	VIPRoller
+
+	Weighted random selection from a probability table.
+	Used by VIPService to roll wheel multipliers and icon multipliers.
+
+	─── Design ─────────────────────────────────────────────────────────
+	bake()  — converts a raw { multiplier, weight }[] config into a
+	           pre-processed BakedTable. Called ONCE at startup.
+	roll()  — performs a weighted random draw against a BakedTable.
+	           Called every time a player spins the wheel or collects an icon.
+	           Zero allocation — reads from the pre-baked table, returns a
+	           stack-allocated result struct only.
+
+	─── Why table-based (not buffer-based) ─────────────────────────────
+	The original codebase had two implementations: a buffer-based one
+	(VIPRoller.luau) and a table-based one (VIPVerifier.luau, misnamed).
+	We keep the table-based approach because:
+	  - VIP multiplier tables have < 20 entries in any realistic configuration.
+	  - At that scale, table field access is faster than buffer.readf64 (no
+	    C→Lua boundary crossing per read).
+	  - The table version is readable without knowing the byte layout.
+	  - The buffer version used f64 for weights, costing 8 bytes per field
+	    where a Lua number already IS a double — no space saving.
+	
+	If the table ever grows to hundreds of entries, swap bake() to a buffer
+	and roll() to a binary search. At < 20 entries, linear scan is fastest.
+
+	─── Merging the two files ───────────────────────────────────────────
+	VIPVerifier.luau was erroneously a copy of VIPRoller, not a verifier.
+	VIPVerifier.luau has been replaced with a real ownership checker
+	(see VIPVerifier.luau). This file is the single VIPRoller implementation.
+]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VIPTypes = require(ReplicatedStorage.Shared.Types.VIPTypes)
+local VIPTypes          = require(ReplicatedStorage.Shared.Types.VIPTypes)
 
--- ─── Types ────────────────────────────────────────────────────────────────────
+-- ─── Upvalues ────────────────────────────────────────────────────────────────
+local tcreate    = table.create
+local mathRandom = math.random
 
+-- ─── Types ───────────────────────────────────────────────────────────────────
+type WeightEntry    = VIPTypes.WeightEntry
+type BakedTable     = VIPTypes.BakedTable
 type MultiplierResult = VIPTypes.MultiplierResult
-type RawWeightEntry = { multiplier: number, weight: number }
 
--- Wrapper for the raw buffer to pass the size and total weight around easily
-export type BakedBufferTable = {
-	buf: buffer,
-	count: number,
-	totalWeight: number
-}
-
--- ─── Upvalues ─────────────────────────────────────────────────────────────────
-
-local buffer_create   = buffer.create
-local buffer_writef64 = buffer.writef64
-local buffer_readf64  = buffer.readf64
-local math_random     = math.random
-
--- ─── Module ───────────────────────────────────────────────────────────────────
-
+-- ─── Module ──────────────────────────────────────────────────────────────────
 local VIPRoller = {}
 
 --[[
-	Bakes a raw configuration table into a contiguous byte buffer.
-	Memory Layout (16 bytes per entry):
-	[Offset 0-7]  f64: Multiplier
-	[Offset 8-15] f64: Cumulative Weight
-]]
-function VIPRoller.bake(config: { RawWeightEntry }): BakedBufferTable
-	local count = #config
+	bake(config) → BakedTable
 
-	-- Allocate exactly 16 bytes per entry
-	local buf = buffer_create(count * 16)
+	Pre-processes a raw weight config into cumulative-weight form.
+	Allocates exactly #config entry tables up front via table.create.
+
+	Call this ONCE per config at startup. Never call it inside a roll loop.
+
+	config format:
+	  { { multiplier = 2.0, weight = 10 }, { multiplier = 1.5, weight = 30 }, ... }
+]]
+function VIPRoller.bake(config: { WeightEntry }): BakedTable
+	local count       = #config
+	local entries     = tcreate(count)
 	local totalWeight = 0
 
 	for i = 1, count do
-		local entry = config[i]
-		totalWeight += entry.weight
-
-		-- i - 1 gives us a 0-based index. Multiply by 16 bytes per entry.
-		local offset = (i - 1) * 16
-
-		buffer_writef64(buf, offset, entry.multiplier)
-		buffer_writef64(buf, offset + 8, totalWeight)
+		local entry   = config[i]
+		totalWeight  += entry.weight
+		-- Short keys (m, c) reduce table field lookup time when roll() is hot.
+		entries[i] = { m = entry.multiplier, c = totalWeight }
 	end
 
 	return {
-		buf = buf,
-		count = count,
-		totalWeight = totalWeight
+		entries     = entries,
+		totalWeight = totalWeight,
 	}
 end
 
 --[[
-	Performs a weighted roll against a baked buffer table.
-	Extracts both the multiplier and dynamically calculates the original weight.
+	roll(baked) → MultiplierResult
+
+	Performs a weighted random draw. O(n) linear scan — fast for small tables.
+	Returns the multiplier and its original (non-cumulative) weight.
+
+	The weight field is provided for logging/analytics only.
+	Callers (VIPService) apply result.multiplier to the base reward amount.
+
+	Fallback { multiplier = 1, weight = 0 } should be unreachable if the
+	config table is non-empty and all weights are positive.
 ]]
-function VIPRoller.roll(baked: BakedBufferTable): MultiplierResult
-	local buf = baked.buf
-	local count = baked.count
+function VIPRoller.roll(baked: BakedTable): MultiplierResult
+	local entries     = baked.entries
 	local totalWeight = baked.totalWeight
+	local roll        = mathRandom() * totalWeight
 
-	-- Generate a random float between 0 and totalWeight
-	local roll = math_random() * totalWeight
-
-	-- Linear search through cumulative weights in the buffer
-	for i = 1, count do
-		local offset = (i - 1) * 16
-		local cumulativeWeight = buffer_readf64(buf, offset + 8)
-
-		if roll <= cumulativeWeight then
-			local multiplier = buffer_readf64(buf, offset)
-			local originalWeight: number
-
-			-- Calculate original weight for logging/analytics
-			if i == 1 then 
-				originalWeight = cumulativeWeight
-			else 
-				local prevCumulative = buffer_readf64(buf, (i - 2) * 16 + 8)
-				originalWeight = cumulativeWeight - prevCumulative
-			end
+	for i = 1, #entries do
+		local entry = entries[i]
+		if roll <= entry.c then
+			-- Original weight = cumulative[i] - cumulative[i-1]  (or just c if i == 1)
+			local originalWeight: number = if i == 1
+				then entry.c
+				else entry.c - entries[i - 1].c
 
 			return {
-				multiplier = multiplier,
+				multiplier = entry.m,
 				weight     = originalWeight,
 			}
 		end
 	end
 
-	-- Fallback: Should be unreachable if the buffer is baked correctly
+	-- Unreachable with a valid baked table (roll ≤ totalWeight always).
 	return { multiplier = 1, weight = 0 }
 end
 

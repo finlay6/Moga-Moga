@@ -1,44 +1,64 @@
--- ReplicatedStorage/Shared/Types/VIPTypes.lua
 --!strict
+-- ReplicatedStorage/Shared/Types/VIPTypes.luau
 
 --[[
 	VIPTypes
 
-	All types used by VIPService and its callers.
+	Single source of truth for all VIP-related type contracts.
+	Used by VIPService, EconomyMultiplierService, and any client replicas.
+	No logic lives here.
 ]]
 
 local VIPTypes = {}
 
--- ─── VIP Status ───────────────────────────────────────────────────────────────
--- The canonical per-player VIP state.
--- Written to Replica on join and whenever status changes.
-
+-- ─── Tier Constants ───────────────────────────────────────────────────────────
+-- Re-exported as a type so callers can annotate tier parameters without
+-- importing VIPConstants at the type level.
+export type Tier = number -- 0 = None, 1 = Standard, 2 = Premium
+export type TierLabel = "None" | "Standard" | "Premium"
+-- ─── VIPStatus ────────────────────────────────────────────────────────────────
+-- The canonical per-player VIP snapshot.
+-- Lives in the server-side status cache and is written into profile.Data.VIP
+-- on every resolve so it survives session end.
 export type VIPStatus = {
-	isVIP       : boolean,
-	tier        : number,       -- 0 = none, 1 = standard, 2 = premium
-	tierLabel   : string,       -- "None" | "VIP" | "VIP Premium"
-	expiresAt   : number,       -- Unix timestamp, 0 = no expiry
-	grantedAt   : number,       -- Unix timestamp of when VIP was first confirmed
+	isVIP      : boolean,
+	tier       : Tier,
+	tierLabel  : TierLabel,   -- "None" | "Standard" | "Premium"
+	expiresAt  : number,   -- Unix timestamp; 0 = permanent (gamepass-based)
+	grantedAt  : number,   -- Unix timestamp of first confirmation this session
 }
 
--- ─── Multiplier Result ────────────────────────────────────────────────────────
--- Returned by rollWheelMultiplier and getIconMultiplier.
--- Contains the rolled value and the weight it came from for logging.
-
+-- ─── MultiplierResult ─────────────────────────────────────────────────────────
+-- Returned by rollWheelMultiplier / rollIconMultiplier.
+-- weight is the raw probability weight of this outcome — used for logging only.
 export type MultiplierResult = {
 	multiplier : number,
-	weight     : number,   -- the weight of this outcome in the table
+	weight     : number,
 }
 
--- ─── Gift Queue Entry ─────────────────────────────────────────────────────────
--- When the owner initiates a VIP gift, a target is queued server-side
--- before the purchase product is prompted.
+-- ─── WeightEntry ──────────────────────────────────────────────────────────────
+-- One entry in a raw multiplier config table (VIPConstants.WHEEL_MULTIPLIERS etc.)
+export type WeightEntry = {
+	multiplier : number,
+	weight     : number,
+}
 
+-- ─── BakedTable ───────────────────────────────────────────────────────────────
+-- Pre-processed form of a WeightEntry array.
+-- Built once at startup by VIPRoller.bake; never rebuilt per roll.
+export type BakedTable = {
+	entries     : { { m: number, c: number } }, -- m = multiplier, c = cumulative weight
+	totalWeight : number,
+}
+
+-- ─── GiftQueueEntry ───────────────────────────────────────────────────────────
+-- Held server-side between queueGiftTarget and processGiftReceipt.
+-- Keyed by granter UserId.
 export type GiftQueueEntry = {
-	granterId    : number,   -- UserId of the admin/owner initiating the gift
-	targetId     : number,   -- UserId of the player receiving VIP
-	targetName   : string,
-	queuedAt     : number,   -- os.time() when queued
+	granterId  : number,
+	targetId   : number,
+	targetName : string,
+	queuedAt   : number, -- os.time() when the queue entry was created
 }
 
 return VIPTypes

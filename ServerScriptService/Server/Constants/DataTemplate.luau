@@ -35,8 +35,10 @@ local DataTemplate = {
 	Economy = {
 		Cash            = 0,       -- Primary in-game currency
 		Gems            = 0,       -- Premium currency (spin wheel rewards, etc.)
-		TotalEarned     = 0,       -- Lifetime cash earned (useful for analytics/prestige)
-		TotalSpent      = 0,       -- Lifetime cash spent
+		TotalCashEarned     = 0,       -- Lifetime cash earned (useful for analytics/prestige)
+		TotalCashSpent      = 0,       -- Lifetime cash spent
+		TotalGemsEarned = 0,
+		TotalGemsSpent = 0
 	},
 
 	-- ─── VIP ─────────────────────────────────────────────────────────────────

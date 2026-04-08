@@ -28,8 +28,8 @@ VIPConstants.TIER_PREMIUM  = 2
 
 VIPConstants.TIER_LABELS = table.freeze({
 	[0] = "None",
-	[1] = "VIP",
-	[2] = "VIP Premium",
+	[1] = "Standard",
+	[2] = "Premium",
 })
 
 -- ─── Shop Discount ────────────────────────────────────────────────────────────
