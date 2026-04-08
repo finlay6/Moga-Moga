@@ -3,8 +3,6 @@
 -- All types used by EconomyService and its callers.
 -- Import this in any module that deals with economy data.
 
-local EconomyConstants = require(game.ReplicatedStorage.Shared.Constants.EconomyConstants)
-
 local EconomyTypes = {}
 
 -- ─── Currency Types ───────────────────────────────────────────────────────────

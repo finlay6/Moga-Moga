@@ -23,10 +23,9 @@
 
 local Shared    = game.ReplicatedStorage.Shared
 local Logger    = require(Shared.Util.Logger)
-local Native = require(Shared.Util.Native)
 
-local osTime = Native.time
-local pcall = Native.pcall
+local osTime = os.time
+local pcall = pcall
 
 local log = Logger.new("DataMigration")
 
@@ -74,11 +73,11 @@ local DataMigrationService = {}
 
 -- Runs all pending migrations on a profile's Data table.
 -- Called by DataService immediately after a session starts.
-function DataMigrationService.migrate(data: { [any]: any })
+function DataMigrationService.migrate(data: { [any]: any }) : boolean
 	local currentVersion = data.Meta and data.Meta.DataVersion or 0
 
 	if currentVersion == CURRENT_VERSION then
-		return -- Already up to date, nothing to do
+		return true -- Already up to date, nothing to do
 	end
 
 	if currentVersion > CURRENT_VERSION then
@@ -88,7 +87,7 @@ function DataMigrationService.migrate(data: { [any]: any })
 			currentVersion,
 			CURRENT_VERSION
 		)
-		return
+		return true
 	end
 
 	log:info(
@@ -109,10 +108,11 @@ function DataMigrationService.migrate(data: { [any]: any })
 			data.Meta.DataVersion = version
 			data.Meta.LastUpdatedAt = osTime()
 			log:debug("Migration to version {} applied successfully", version)
+			return true
 		else
 			log:error("Migration to version {} FAILED: {}", version, err)
 			-- Stop here — don't apply further migrations on top of a broken state
-			break
+			return false
 		end
 	end
 end

@@ -1,17 +1,15 @@
 --!strict
 
-local Native = require(script.Parent.Native)
-
-local tinsert = Native.tinsert
-local tremove = Native.tremove
-local tcreate = Native.tcreate
-local tmove   = Native.tmove
-local tsort   = Native.tsort
-local tclone  = Native.tclone
-local tfind   = Native.tfind
-local tfreeze = Native.tfreeze
-local random  = Native.random
-local floor   = Native.floor
+local tinsert = table.insert
+local tremove = table.remove
+local tcreate = table.create
+local tmove   = table.move
+local tsort   = table.sort
+local tclone  = table.clone
+local tfind   = table.find
+local tfreeze = table.freeze
+local random  = math.random
+local floor   = math.floor
 
 local TableUtil = {}
 

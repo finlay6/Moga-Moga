@@ -1,25 +1,23 @@
 --!strict
 --!native
 
-local Native = require(script.Parent.Native)
-
-local floor  = Native.floor
-local ceil   = Native.ceil
-local abs    = Native.abs
-local sqrt   = Native.sqrt
-local max    = Native.max
-local min    = Native.min
-local random = Native.random
-local huge   = Native.huge
-local pi     = Native.pi
-local sin    = Native.sin
-local cos    = Native.cos
-local clamp  = Native.clamp
-local band   = Native.band
-local lshift = Native.lshift
-local rshift = Native.rshift
-local countlz = Native.countlz
-local tfreeze = Native.tfreeze
+local floor  = math.floor
+local ceil   = math.ceil
+local abs    = math.abs
+local sqrt   = math.sqrt
+local max    = math.max
+local min    = math.min
+local random = math.random
+local huge   = math.huge
+local pi     = math.pi
+local sin    = math.sin
+local cos    = math.cos
+local clamp  = math.clamp
+local band   = bit32.band
+local lshift = bit32.lshift
+local rshift = bit32.rshift
+local countlz = bit32.countlz
+local tfreeze = table.freeze
 
 local MathUtil = {}
 

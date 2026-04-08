@@ -1,21 +1,15 @@
+--!strict
 local RunService = game:GetService("RunService")
 
-local Native = require(script.Parent.Native)
-
-local format   = Native.format
-local tconcat  = Native.tconcat
-local tcreate  = Native.tcreate
-local tinsert  = Native.tinsert
-local tfreeze = Native.tfreeze
-local osClock  = Native.clock
-local spawn    = Native.spawn
-local bcreate  = Native.bcreate
-local bwritef64 = Native.bwritef64
-local breadf64  = Native.breadf64
+local format    = string.format
+local tconcat   = table.concat
+local tclear    = table.clear -- Essential for memory reuse
+local osClock   = os.clock
+local spawn     = task.spawn
 
 -- ─── Config ───────────────────────────────────────────────────────────────────
 
-local Level = tfreeze({
+local Level = table.freeze({
 	DEBUG = 1,
 	INFO  = 2,
 	WARN  = 3,
@@ -25,28 +19,25 @@ local Level = tfreeze({
 
 local Config = {
 	MinLevel    = Level.DEBUG,
-	ShowLevel   = true,
-	ShowTag     = true,
-	ShowContext = true,
-	ShowTime    = false,
+	ShowTime    = true,
 }
 
 -- ─── Internal ─────────────────────────────────────────────────────────────────
 
-local LABELS = tfreeze({
+local LABELS = table.freeze({
 	[Level.DEBUG] = "🛠️ DEBUG",
 	[Level.INFO]  = "✅ INFO",
-	[Level.WARN]  = "⚠️ WARN",
+	[Level.WARN]  = "🔆 WARN",
 	[Level.ERROR] = "❌ ERROR",
 	[Level.FATAL] = "💀 FATAL",
 })
 
 local CONTEXT = if RunService:IsServer() then "Server" else "Client"
 
--- Pre-allocated scratch buffer for the ShowTime prefix path.
--- Holds one f64 clock value — avoids a heap allocation per emit
--- on the uncommon ShowTime path.
-local _clockBuf = bcreate(8)
+-- Shared memory pool to avoid heap allocations during log emission
+local SCRATCH_PARTS: { string } = table.create(8)
+local SCRATCH_ARGS: { any }     = table.create(16)
+local _clockBuf = buffer.create(8)
 
 local function interpolate(template: string, args: { any }): string
 	local i = 0
@@ -57,31 +48,34 @@ local function interpolate(template: string, args: { any }): string
 	end))
 end
 
-local function buildPrefix(level: number, tag: string): string
-	if not Config.ShowLevel and not Config.ShowTag
-		and not Config.ShowContext and not Config.ShowTime then
-		return ""
-	end
-
-	local parts: { string } = tcreate(4)
-
-	if Config.ShowTime then
-		bwritef64(_clockBuf, 0, osClock())
-		tinsert(parts, format("[%.3fs]", breadf64(_clockBuf, 0)))
-	end
-
-	if Config.ShowContext then tinsert(parts, "[" .. CONTEXT .. "]") end
-	if Config.ShowLevel   then tinsert(parts, "[" .. LABELS[level] .. "]") end
-	if Config.ShowTag     then tinsert(parts, "[" .. tag .. "]") end
-
-	return tconcat(parts, " ") .. " "
-end
-
-local function emit(level: number, tag: string, template: string, args: { any })
+local function emit(level: number, instancePrefix: string, template: string, ...)
 	if level < Config.MinLevel then return end
 
-	local message = buildPrefix(level, tag) .. interpolate(template, args)
+	-- 1. Grab varargs without allocating a new table if possible
+	-- In Luau, {...} is a heap allocation. We use table.pack/unpack logic or a pool.
+	tclear(SCRATCH_ARGS)
+	local argCount = select("#", ...)
+	for i = 1, argCount do
+		SCRATCH_ARGS[i] = select(i, ...)
+	end
 
+	-- 2. Build the message using the pre-allocated scratch table
+	tclear(SCRATCH_PARTS)
+
+	if Config.ShowTime then
+		buffer.writef64(_clockBuf, 0, osClock())
+		table.insert(SCRATCH_PARTS, format("[%.3fs]", buffer.readf64(_clockBuf, 0)))
+	end
+
+	-- instancePrefix already contains [CONTEXT] and [TAG]
+	table.insert(SCRATCH_PARTS, instancePrefix)
+	table.insert(SCRATCH_PARTS, "[" .. LABELS[level] .. "]")
+	table.insert(SCRATCH_PARTS, " ")
+	table.insert(SCRATCH_PARTS, interpolate(template, SCRATCH_ARGS))
+
+	local message = tconcat(SCRATCH_PARTS)
+
+	-- 3. Output
 	if level <= Level.INFO then
 		print(message)
 	elseif level == Level.WARN then
@@ -93,59 +87,28 @@ end
 
 -- ─── LoggerInstance ──────────────────────────────────────────────────────────
 
-export type LoggerInstance = {
-	tag  : string,
-	debug: (self: LoggerInstance, template: string, ...any) -> (),
-	info : (self: LoggerInstance, template: string, ...any) -> (),
-	warn : (self: LoggerInstance, template: string, ...any) -> (),
-	error: (self: LoggerInstance, template: string, ...any) -> (),
-	fatal: (self: LoggerInstance, template: string, ...any) -> (),
-}
-
 local Meta = {}
 Meta.__index = Meta
 
-function Meta:debug(template: string, ...: any)
-	emit(Level.DEBUG, self.tag, template, { ... })
-end
-
-function Meta:info(template: string, ...: any)
-	emit(Level.INFO, self.tag, template, { ... })
-end
-
-function Meta:warn(template: string, ...: any)
-	emit(Level.WARN, self.tag, template, { ... })
-end
-
-function Meta:error(template: string, ...: any)
-	emit(Level.ERROR, self.tag, template, { ... })
-end
-
-function Meta:fatal(template: string, ...: any)
-	emit(Level.FATAL, self.tag, template, { ... })
-end
+function Meta:debug(template: string, ...) emit(Level.DEBUG, self._prefix, template, ...) end
+function Meta:info(template: string, ...)  emit(Level.INFO, self._prefix, template, ...)  end
+function Meta:warn(template: string, ...)  emit(Level.WARN, self._prefix, template, ...)  end
+function Meta:error(template: string, ...) emit(Level.ERROR, self._prefix, template, ...) end
+function Meta:fatal(template: string, ...) emit(Level.FATAL, self._prefix, template, ...) end
 
 -- ─── Public API ───────────────────────────────────────────────────────────────
 
 local Logger = {}
+Logger.Level = Level
 
-Logger.Level  = Level
-Logger.Config = Config
+function Logger.new(tag: string)
+	-- Pre-calculate the static part of the log string once per instance
+	local prefix = format("[%s] [%s]", CONTEXT, tag)
 
-function Logger.new(tag: string): LoggerInstance
-	assert(type(tag) == "string" and #tag > 0,
-		"Logger.new: tag must be a non-empty string")
-	return setmetatable({ tag = tag }, Meta) :: any
+	return setmetatable({ 
+		tag = tag,
+		_prefix = prefix 
+	}, Meta)
 end
 
-function Logger.setLevel(level: number)
-	assert(level >= Level.DEBUG and level <= Level.FATAL,
-		"Logger.setLevel: invalid level")
-	Config.MinLevel = level
-end
-
-function Logger.silenceDebug()
-	Config.MinLevel = Level.WARN
-end
-
-return tfreeze(Logger)
+return table.freeze(Logger)

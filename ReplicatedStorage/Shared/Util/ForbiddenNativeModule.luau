@@ -1,5 +1,6 @@
 --!strict
 -- Here be dragons. Fast ones.
+-- Technically can use this, would not recommend this though lol. Super funky. If any player steals this script, they will be cursed, I promise.
 --
 -- Two things live here:
 --   1. Stolen engine metamethods (__index / __newindex) for Instance property access.

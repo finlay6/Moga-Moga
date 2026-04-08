@@ -2,9 +2,11 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Server = ServerScriptService.Server
 local ServicesFolder = Server.Services
 local Core = ServicesFolder.Core
+local Economy = ServicesFolder.Economy
 
 local Services = {
 	require(Core.DataService),
+	require(Economy.EconomyService)
 }
 
 for _, service in Services do

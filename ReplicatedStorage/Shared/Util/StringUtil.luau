@@ -1,27 +1,25 @@
 --!strict
 
-local Native = require(script.Parent.Native)
-
-local format  = Native.format
-local find    = Native.find
-local match   = Native.match
-local gmatch  = Native.gmatch
-local gsub    = Native.gsub
-local sub     = Native.sub
-local rep     = Native.rep
-local reverse = Native.reverse
-local upper   = Native.upper
-local lower   = Native.lower
-local byte    = Native.byte
-local floor   = Native.floor
-local abs     = Native.abs
-local tcreate = Native.tcreate
-local tinsert = Native.tinsert
-local tconcat = Native.tconcat
-local tfreeze = Native.tfreeze
-local tonumber = Native.tonnumber
-local tostring = Native.tostring
-local ceil = Native.ceil
+local format  = string.format
+local find    = string.find
+local match   = string.match
+local gmatch  = string.gmatch
+local gsub    = string.gsub
+local sub     = string.sub
+local rep     = string.rep
+local reverse = string.reverse
+local upper   = string.upper
+local lower   = string.lower
+local byte    = string.byte
+local floor   = math.floor
+local abs     = math.abs
+local tcreate = table.create
+local tinsert = table.insert
+local tconcat = table.concat
+local tfreeze = table.freeze
+local tonumber = tonumber
+local tostring = tostring
+local ceil = math.ceil
 
 local StringUtil = {}
 

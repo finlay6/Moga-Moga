@@ -1,16 +1,14 @@
 --!strict
 
-local Native = require(script.Parent.Native)
-
-local floor   = Native.floor
-local abs     = Native.abs
-local huge    = Native.huge
-local tinsert = Native.tinsert
-local tconcat = Native.tconcat
-local tcreate = Native.tcreate
-local tfreeze = Native.tfreeze
-local tostring = Native.tostring
-local type = Native.type
+local floor   = math.floor
+local abs     = math.abs
+local huge    = math.huge
+local tinsert = table.insert
+local tconcat = table.concat
+local tcreate = table.create
+local tfreeze = table.freeze
+local tostring = tostring
+local type = type
 
 local ValidatorUtil = {}
 

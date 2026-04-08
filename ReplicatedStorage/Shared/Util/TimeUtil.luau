@@ -1,16 +1,15 @@
 --!strict
+--!native
 
-local Native = require(script.Parent.Native)
-
-local floor    = Native.floor
-local abs      = Native.abs
-local osTime   = Native.time
-local osClock  = Native.clock
-local osDate   = Native.date
-local format   = Native.format
-local tconcat  = Native.tconcat
-local tcreate  = Native.tcreate
-local tinsert  = Native.tinsert
+local floor    = math.floor
+local abs      = math.abs
+local osTime   = os.time
+local osClock  = os.clock
+local osDate   = os.date
+local format   = string.format
+local tconcat  = table.concat
+local tcreate  = table.create
+local tinsert  = table.insert
 
 -- ─── Constants ────────────────────────────────────────────────────────────────
 
