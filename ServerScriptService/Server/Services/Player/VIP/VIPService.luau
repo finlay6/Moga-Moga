@@ -77,23 +77,13 @@ local log = Logger.new("VIPService")
 
 -- Per-player VIP status. Populated on join, cleared on leave.
 -- All reads go through the public API — never this table directly.
-local _cache: { [Player]: VIPStatus } = {}
+local _statusCache: { [Player]: VIPStatus } = {}
 
 -- Pre-baked probability tables — built once in init(), reused forever.
 local _bakedWheel: BakedTable
 local _bakedIcon : BakedTable
 
 -- ─── Private Helpers ─────────────────────────────────────────────────────────
-
-local function _buildStatus(tier: number): VIPStatus
-	return {
-		isVIP     = tier > VIPConstants.TIER_NONE,
-		tier      = tier,
-		tierLabel = VIPConstants.TIER_LABELS[tier] :: TierLabel,
-		expiresAt = 0,       -- 0 = permanent (gamepass-based)
-		grantedAt = osTime(),
-	}
-end
 
 -- Writes VIP status into the player's profile so it survives server restart.
 -- Called on every resolve and on gift receipt.
@@ -104,7 +94,7 @@ local function _persistToProfile(player: Player, status: VIPStatus)
 end
 
 --[[
-	_resolveAndCache(player)
+	_loadPlayerVIPStatus(player)
 
 	Full resolve pipeline: check gamepass → build status → cache → persist.
 	Also applies any pending offline gift that was queued while the player
@@ -114,26 +104,28 @@ end
 ]]
 local VIPService = {}
 
-local function _resolveAndCache(player: Player)
+local function _loadPlayerVIPStatus(player: Player): boolean
 	-- 1. Check for a pending offline gift BEFORE checking gamepasses.
 	--    If the player received a VIP gift while offline, their profile.Data.VIP
 	--    will have PendingGrant = true. Honour it first.
 	local pendingGrant = StateService.Get(player, pendingGrantPath)
+	if pendingGrant == nil then return false end
+	
 	if pendingGrant == true then
 		StateService.Set(player, pendingGrantPath, false)
 		local status = _buildStatus(VIPConstants.TIER_STANDARD)
-		_cache[player] = status
+		_statusCache[player] = status
 		_persistToProfile(player, status)
 		log:info("{} received a pending VIP gift — tier set to Standard", player.Name)
 		VIPService.VIPStatusChanged:Fire(player, status)
-		return
+		return true
 	end
 
 	-- 2. Check live gamepass ownership.
-	local tier   = MarketplaceService.getTier(player)
+	local tier = MarketplaceService.getTier(player)
 	local status = _buildStatus(tier)
 
-	_cache[player] = status
+	_statusCache[player] = status
 	_persistToProfile(player, status)
 
 	if status.isVIP then
@@ -143,6 +135,7 @@ local function _resolveAndCache(player: Player)
 	end
 
 	VIPService.VIPStatusChanged:Fire(player, status)
+	return true
 end
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
@@ -160,25 +153,25 @@ VIPService.VIPStatusChanged = Signal() :: Signal.Signal<Player, VIPStatus>
 
 --- Returns true if the player has any VIP tier. The most-called function.
 function VIPService.isVIP(player: Player): boolean
-	local status = _cache[player]
+	local status = _statusCache[player]
 	return status ~= nil and status.isVIP
 end
 
 --- Returns 0 (none), 1 (standard), or 2 (premium).
 function VIPService.getTier(player: Player): number
-	local status = _cache[player]
+	local status = _statusCache[player]
 	return if status ~= nil then status.tier else VIPConstants.TIER_NONE
 end
 
 --- Returns the full VIPStatus struct, or nil if not yet resolved.
 function VIPService.getStatus(player: Player): VIPStatus?
-	return _cache[player]
+	return _statusCache[player]
 end
 
 --- Re-runs the full gamepass check. Call after a mid-session purchase.
 function VIPService.refreshStatus(player: Player)
 	log:info("Refreshing VIP status for {}", player.Name)
-	taskSpawn(_resolveAndCache, player)
+	taskSpawn(_loadPlayerVIPStatus, player)
 end
 
 -- ─── Public API: Multipliers ─────────────────────────────────────────────────
@@ -234,7 +227,7 @@ function VIPService.processGiftReceipt(granterUserId: number): boolean
 	return VIPGiftingManager.processReceipt(granterUserId, function(targetPlayer: Player)
 		-- onApply callback: update cache, persist, and fire the signal.
 		local status = _buildStatus(VIPConstants.TIER_STANDARD)
-		_cache[targetPlayer]  = status
+		_statusCache[targetPlayer]  = status
 		_persistToProfile(targetPlayer, status)
 		VIPService.VIPStatusChanged:Fire(targetPlayer, status)
 	end)
@@ -245,7 +238,7 @@ end
 --- Returns all currently online VIP players.
 function VIPService.getAllVIPPlayers(): { Player }
 	local result: { Player } = {}
-	for player, status in _cache do
+	for player, status in _statusCache do
 		if status.isVIP then
 			result[#result + 1] = player
 		end
@@ -256,7 +249,7 @@ end
 --- Returns the count of VIP players currently online.
 function VIPService.getVIPCount(): number
 	local count = 0
-	for _, status in _cache do
+	for _, status in _statusCache do
 		if status.isVIP then count += 1 end
 	end
 	return count
@@ -295,7 +288,7 @@ function VIPService.init()
 
 	-- Cleanup on leave.
 	Players.PlayerRemoving:Connect(function(player: Player)
-		_cache[player] = nil
+		_statusCache[player] = nil
 		VIPGiftingManager.clearQueue(player.UserId)
 	end)
 
@@ -315,23 +308,13 @@ end
 function VIPService.start()
 	for _, player in Players:GetPlayers() do
 		taskSpawn(function()
-			local profile = SessionService.WaitForProfile(player, 15)
-			if profile == nil then
-				log:warn("VIP check skipped for {} — profile timed out", player.Name)
-				return
-			end
-			_resolveAndCache(player)
+			_loadPlayerVIPStatus(player)
 		end)
 	end
 
 	Players.PlayerAdded:Connect(function(player: Player)
 		taskSpawn(function()
-			local profile = SessionService.WaitForProfile(player, 15)
-			if profile == nil then
-				log:warn("VIP check skipped for {} — profile timed out", player.Name)
-				return
-			end
-			_resolveAndCache(player)
+			_loadPlayerVIPStatus(player)
 		end)
 	end)
 

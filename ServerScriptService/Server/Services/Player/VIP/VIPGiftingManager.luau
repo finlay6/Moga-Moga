@@ -39,7 +39,7 @@ local Server   = ServerScriptService.Server
 
 local VIPConstants       = require(Shared.Constants.Player.VIPConstants)
 local VIPTypes           = require(Shared.Types.VIPTypes)
-local DataStoreService   = require(Server.Services.Core.DataStore.DataStoreService)
+local PersistenceService   = require(Server.Services.Core.DataStore.PersistenceService)
 local Logger             = require(Shared.Util.Logger)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ end
 function VIPGiftingManager.processReceipt(
 	granterUserId : number,
 	onApply       : (targetPlayer: Player) -> ()
-): boolean
+)
 	local entry = _queue[granterUserId]
 	if entry == nil then
 		log:warn("processReceipt: no queue entry found for granterUserId {}", granterUserId)
@@ -154,23 +154,18 @@ function VIPGiftingManager.processReceipt(
 	end
 
 	-- ── Offline path ───────────────────────────────────────────────────────
-	-- BUG FIXED: original silently discarded the gift here.
 	-- Write a pending grant to the target's stored profile.
 	-- VIPService reads profile.Data.VIP.PendingGrant on next login.
-	local ok, err = DataStoreService.writeOfflineVIPGrant(entry.targetId)
-	if ok then
-		log:info(
-			"VIP gift queued for offline player {} (UserId {}) — will apply on next login",
-			entry.targetName, entry.targetId
-		)
-		return true
-	else
-		log:error(
-			"VIP gift FAILED for offline player {} (UserId {}): {}",
-			entry.targetName, entry.targetId, tostring(err)
-		)
-		-- Return false so the receipt processor can decide whether to retry or refund.
-		return false
+	PersistenceService.writeOfflineVIPGrant(entry.targetId)
+		:andThen(function()
+			log:info("Offline VIP gift queued for {}", entry.targetName)
+			return true
+		end)
+		:catch(function(err)
+			log:error("Offline VIP gift failed after retries: {}", err)
+			return false
+			-- caller can decide whether to refund
+		end)
 	end
 end
 

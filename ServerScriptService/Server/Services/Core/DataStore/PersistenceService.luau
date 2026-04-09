@@ -1,8 +1,8 @@
 --!strict
--- ServerScriptService/Server/Services/Core/DataStore/DataStoreService.luau
+-- ServerScriptService/Server/Services/Core/DataStore/PersistanceService.luau
 
 --[[
-	DataStoreService
+	PersistanceService
 
 	Thin bridge between SessionService and the ProfileStore library.
 	All it knows is how to start, save, and remove profile sessions.
@@ -27,6 +27,7 @@ local Logger       = require(Shared.Util.Logger)
 local ProfileTypes = require(Shared.Types.ProfileTypes)
 local DataTemplate = require(Server.Constants.DataTemplate)
 local ProfileStore = require(Server.Packages.ProfileStore)
+local Promise = require(Shared.Packages.Promise)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local tostring   = tostring
@@ -66,7 +67,16 @@ ProfileStore.OnCriticalToggle:Connect(function(isCritical: boolean)
 end)
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
-local DataStoreService = {}
+local PersistenceService = {}
+
+function PersistenceService.writeOfflineVIPGrant(targetUserId: number)
+    return Promise.retry(function()
+        return Promise.new(function(resolve, reject)
+            local ok = _store:MessageAsync(`Player_{targetUserId}`, { grantVIP = true })
+            if ok then resolve() else reject("MessageAsync failed") end
+        end)
+    end, 3)  -- retry up to 3 times
+end
 
 --[[
 	LoadProfile(player)
@@ -79,7 +89,7 @@ local DataStoreService = {}
 	This is the ONLY entry point for loading player data. SessionService
 	calls this once per player and owns the returned Profile object.
 ]]
-function DataStoreService.LoadProfile(player: Player): Profile?
+function PersistenceService.LoadProfile(player: Player): Profile?
 	local key = KEY_PREFIX .. tostring(player.UserId)
 
 	local profile = _store:StartSessionAsync(key, {
@@ -116,7 +126,7 @@ end
 	For use by admin tools or GDPR erasure flows only.
 	Returns (ok: boolean, err: string?).
 ]]
-function DataStoreService.RemoveData(userId: number): (boolean, string?)
+function PersistenceService.RemoveData(userId: number): (boolean, string?)
 	local key = KEY_PREFIX .. tostring(userId)
 	local ok, err = pcall(_store.RemoveAsync, _store, key)
 	if not ok then
@@ -125,4 +135,4 @@ function DataStoreService.RemoveData(userId: number): (boolean, string?)
 	return ok, if ok then nil else tostring(err)
 end
 
-return DataStoreService
+return PersistenceService

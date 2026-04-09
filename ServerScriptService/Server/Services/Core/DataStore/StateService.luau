@@ -37,12 +37,16 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Shared       = ReplicatedStorage.Shared
+local Constants = Shared.Constants
 local Server       = ServerScriptService.Server
 local Core         = Server.Services.Core
 
 local Logger        = require(Shared.Util.Logger)
 local Signal        = require(Shared.Packages.Signal)
 local SessionService= require(Core.DataStore.SessionService)
+local DataStoreConstants = require(Constants.Core.DataStoreConstants)
+
+local MAX_PATH_DEPTH = DataStoreConstants.MAX_PATH_DEPTH
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local strSplit  = string.split
@@ -62,6 +66,25 @@ local function _segmentToKey(segment: string): string | number
 	return toNumber(segment) or segment
 end
 
+-- Helper to validate path format and depth
+local function _isValidPath(segments: {string}): boolean
+    local depth = #segments
+    
+    -- Limit depth to ensure it's not empty
+    if depth == 0 or depth > MAX_PATH_DEPTH then
+        return false
+    end
+
+    for _, segment in ipairs(segments) do
+        -- If segment is empty, it means there was a ".." or leading/trailing dot
+        if segment == "" then
+            return false
+        end
+    end
+
+    return true
+end
+
 --[[
 	_navigate(root, path)
 
@@ -72,20 +95,27 @@ end
 	traversal semantics — no risk of the two drifting.
 ]]
 local function _navigate(root: any, path: string): (Node?, string | number | nil)
-	local segments = strSplit(path, ".")
-	local depth    = #segments
-	local current  = root
+    local segments = strSplit(path, ".")
+    
+    -- Abstraction: Validate before processing
+    if not _isValidPath(segments) then
+        return nil, nil
+    end
 
-	for i = 1, depth - 1 do
-		local key = _segmentToKey(segments[i])
-		local next = current[key]
-		if type(next) ~= "table" then
-			return nil, nil
-		end
-		current = next
-	end
+    local depth   = #segments
+    local current = root
 
-	return current :: Node, _segmentToKey(segments[depth])
+    for i = 1, depth - 1 do
+        local key = _segmentToKey(segments[i])
+        local next = current[key]
+        
+        if type(next) ~= "table" then
+            return nil, nil
+        end
+        current = next
+    end
+
+    return current :: Node, _segmentToKey(segments[depth])
 end
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
@@ -127,7 +157,7 @@ function StateService.Set(player: Player, path: string, value: any)
 	local node, key = _navigate(data, path)
 	if node == nil or key == nil then
 		log:error("Set failed — path '{}' could not be resolved for {}", path, player.Name)
-		return
+		return 
 	end
 
 	node[key] = value
@@ -148,6 +178,7 @@ function StateService.Get(player: Player, path: string): any
 
 	local node, key = _navigate(data, path)
 	if node == nil or key == nil then
+		log:error("Get failed — path '{}' could not be resolved for {}", path, player.Name)
 		return nil
 	end
 
