@@ -69,7 +69,7 @@ end)
 -- ─── Module ──────────────────────────────────────────────────────────────────
 local PersistenceService = {}
 
-function PersistenceService.writeOfflineVIPGrant(targetUserId: number)
+function PersistenceService.writeOfflineVIPGrant(targetUserId: number) : Promise
     return Promise.retry(function()
         return Promise.new(function(resolve, reject)
             local ok = _store:MessageAsync(`Player_{targetUserId}`, { grantVIP = true })

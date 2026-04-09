@@ -54,23 +54,22 @@ local Logger             = require(Shared.Util.Logger)
 local Signal             = require(Shared.Packages.Signal)
 local StateService     = require(Server.Services.Core.DataStore.StateService)
 
+local VIPUtil = require("@self/VIPUtility")
+local ProductService = require(ServerScriptService.Server.Services.Player.ProductService)
 local VIPRoller          = require(Server.Services.Player.VIP.VIPRoller)
-local VIPGiftingManager  = require(Server.Services.Player.VIP.VIPGiftingManager)
+local VIPGiftingService = require(Server.Services.Player.VIP.VIPGiftingService)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
-local osTime    = os.time
 local taskSpawn = task.spawn
 
 local pendingGrantPath = `VIP.PendingGrant`
 local isVIPPath = `VIP.IsVIP`
-local tierPath = `VIP.Tier`
 local expiresAtPath = `VIP.ExpiresAt`
 
 -- ─── Types ───────────────────────────────────────────────────────────────────
 type VIPStatus        = VIPTypes.VIPStatus
 type MultiplierResult = VIPTypes.MultiplierResult
 type BakedTable       = VIPTypes.BakedTable
-type TierLabel = VIPTypes.TierLabel
 
 -- ─── State ───────────────────────────────────────────────────────────────────
 local log = Logger.new("VIPService")
@@ -89,7 +88,6 @@ local _bakedIcon : BakedTable
 -- Called on every resolve and on gift receipt.
 local function _persistToProfile(player: Player, status: VIPStatus)
 	StateService.Set(player, isVIPPath, status.isVIP)
-	StateService.Set(player, tierPath, status.tier)
 	StateService.Set(player, expiresAtPath, status.expiresAt)
 end
 
@@ -104,7 +102,7 @@ end
 ]]
 local VIPService = {}
 
-local function _loadPlayerVIPStatus(player: Player): boolean
+local function _loadPlayerVIPStatus(player: Player, definiteOwnership: boolean | nil): boolean
 	-- 1. Check for a pending offline gift BEFORE checking gamepasses.
 	--    If the player received a VIP gift while offline, their profile.Data.VIP
 	--    will have PendingGrant = true. Honour it first.
@@ -113,23 +111,21 @@ local function _loadPlayerVIPStatus(player: Player): boolean
 	
 	if pendingGrant == true then
 		StateService.Set(player, pendingGrantPath, false)
-		local status = _buildStatus(VIPConstants.TIER_STANDARD)
+		local status = VIPUtil._buildStatus(true)
 		_statusCache[player] = status
 		_persistToProfile(player, status)
-		log:info("{} received a pending VIP gift — tier set to Standard", player.Name)
+		log:info("{} received a pending VIP gift", player.Name)
 		VIPService.VIPStatusChanged:Fire(player, status)
 		return true
 	end
 
-	-- 2. Check live gamepass ownership.
-	local tier = MarketplaceService.getTier(player)
-	local status = _buildStatus(tier)
+	local status = VIPUtil._buildStatus(definiteOwnership)
 
 	_statusCache[player] = status
 	_persistToProfile(player, status)
 
 	if status.isVIP then
-		log:info("{} resolved as {} (tier {})", player.Name, status.tierLabel, tier)
+		log:info("{} is VIP", player.Name)
 	else
 		log:debug("{} is not VIP", player.Name)
 	end
@@ -157,39 +153,27 @@ function VIPService.isVIP(player: Player): boolean
 	return status ~= nil and status.isVIP
 end
 
---- Returns 0 (none), 1 (standard), or 2 (premium).
-function VIPService.getTier(player: Player): number
-	local status = _statusCache[player]
-	return if status ~= nil then status.tier else VIPConstants.TIER_NONE
-end
-
 --- Returns the full VIPStatus struct, or nil if not yet resolved.
 function VIPService.getStatus(player: Player): VIPStatus?
 	return _statusCache[player]
 end
 
 --- Re-runs the full gamepass check. Call after a mid-session purchase.
-function VIPService.refreshStatus(player: Player)
+function VIPService.refreshStatus(player: Player, definiteOwnership)
 	log:info("Refreshing VIP status for {}", player.Name)
-	taskSpawn(_loadPlayerVIPStatus, player)
+	taskSpawn(_loadPlayerVIPStatus, player, definiteOwnership)
 end
 
 -- ─── Public API: Multipliers ─────────────────────────────────────────────────
 
 --- Returns the earn multiplier for this player's tier.
 function VIPService.getEarnMultiplier(player: Player): number
-	local tier = VIPService.getTier(player)
-	if tier == VIPConstants.TIER_PREMIUM  then return VIPConstants.EARN_MULTIPLIER_PREMIUM  end
-	if tier == VIPConstants.TIER_STANDARD then return VIPConstants.EARN_MULTIPLIER_STANDARD end
-	return 1
+	return VIPConstants.EARN_MULTIPLIER
 end
 
 --- Returns the shop discount fraction for this player's tier (e.g. 0.2 = 20% off).
 function VIPService.getShopDiscount(player: Player): number
-	local tier = VIPService.getTier(player)
-	if tier == VIPConstants.TIER_PREMIUM  then return VIPConstants.SHOP_DISCOUNT_PREMIUM  end
-	if tier == VIPConstants.TIER_STANDARD then return VIPConstants.SHOP_DISCOUNT_STANDARD end
-	return 0
+	return VIPConstants.SHOP_DISCOUNT
 end
 
 --- Rolls a wheel multiplier. Returns { multiplier, weight }.
@@ -214,7 +198,7 @@ end
 
 --- Queues a gift target before purchase. Returns false if not authorised.
 function VIPService.queueGiftTarget(granter: Player, target: Player): boolean
-	return VIPGiftingManager.queueTarget(granter, target)
+	return VIPGiftingService.queueTarget(granter, target)
 end
 
 --[[
@@ -224,9 +208,9 @@ end
 	Applies VIP to the queued target (online immediately, offline on next login).
 ]]
 function VIPService.processGiftReceipt(granterUserId: number): boolean
-	return VIPGiftingManager.processReceipt(granterUserId, function(targetPlayer: Player)
+	return VIPGiftingService.processReceipt(granterUserId, function(targetPlayer: Player)
 		-- onApply callback: update cache, persist, and fire the signal.
-		local status = _buildStatus(VIPConstants.TIER_STANDARD)
+		local status = VIPUtil._buildStatus(true)
 		_statusCache[targetPlayer]  = status
 		_persistToProfile(targetPlayer, status)
 		VIPService.VIPStatusChanged:Fire(targetPlayer, status)
@@ -274,22 +258,17 @@ function VIPService.init()
 
 	-- Mid-session gamepass purchase: refresh status immediately so the player
 	-- doesn't need to rejoin to receive their VIP benefits.
-	MarketplaceService.PromptGamePassPurchaseFinished:Connect(
-		function(player: Player, passId: number, wasPurchased: boolean)
-			if not wasPurchased then return end
-			if passId == VIPConstants.GAMEPASS_ID_STANDARD
-				or passId == VIPConstants.GAMEPASS_ID_PREMIUM
-			then
-				log:info("{} purchased gamepass {} mid-session — refreshing", player.Name, passId)
-				VIPService.refreshStatus(player)
-			end
+	ProductService.VIPOwnershipResolved:Connect(
+		function(player: Player)
+			log:info("{} purchased gamepass {} mid-session — refreshing", player.Name, passId)
+			VIPService.refreshStatus(player, true)
 		end
 	)
 
 	-- Cleanup on leave.
 	Players.PlayerRemoving:Connect(function(player: Player)
 		_statusCache[player] = nil
-		VIPGiftingManager.clearQueue(player.UserId)
+		VIPGiftingService.clearQueue(player.UserId)
 	end)
 
 	log:info("VIPService initialised (wheel entries: {}, icon entries: {})",

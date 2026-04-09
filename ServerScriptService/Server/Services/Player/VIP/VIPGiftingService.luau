@@ -1,8 +1,8 @@
 --!strict
--- ServerScriptService/Server/Services/Player/VIP/VIPGiftingManager.luau
+-- ServerScriptService/Server/Services/Player/VIP/VIPGiftingService.luau
 
 --[[
-	VIPGiftingManager
+	VIPGiftingService
 
 	Manages the two-step VIP gifting flow:
 	  Step 1 — queueTarget:      admin queues a recipient before prompting purchase
@@ -50,7 +50,7 @@ local GetPlayerByUserId  = Players.GetPlayerByUserId
 type GiftQueueEntry = VIPTypes.GiftQueueEntry
 
 -- ─── State ───────────────────────────────────────────────────────────────────
-local log = Logger.new("VIPGiftingManager")
+local log = Logger.new("VIPGiftingService")
 
 -- Pre-built O(1) set from VIPConstants.GIFT_AUTHORISED_USER_IDS.
 -- BUG FIXED: original did a linear scan of the array on every queueTarget call.
@@ -64,7 +64,7 @@ end
 local _queue: { [number]: GiftQueueEntry } = {}
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
-local VIPGiftingManager = {}
+local VIPGiftingService = {}
 
 --[[
 	isAuthorised(userId) → boolean
@@ -72,7 +72,7 @@ local VIPGiftingManager = {}
 	Returns true if this UserId is in GIFT_AUTHORISED_USER_IDS.
 	O(1) lookup against the pre-built set.
 ]]
-function VIPGiftingManager.isAuthorised(userId: number): boolean
+local function _isAuthorised(userId: number): boolean
 	return _authSet[userId] == true
 end
 
@@ -84,10 +84,10 @@ end
 	  - granter is not in GIFT_AUTHORISED_USER_IDS
 	  - granter and target are the same player
 ]]
-function VIPGiftingManager.queueTarget(granter: Player, target: Player): boolean
+function VIPGiftingService.queueTarget(granter: Player, target: Player): boolean
 	local granterId = granter.UserId
 
-	if not VIPGiftingManager.isAuthorised(granterId) then
+	if not _isAuthorised(granterId) then
 		log:warn("{} (UserId {}) is not authorised to gift VIP", granter.Name, granterId)
 		return false
 	end
@@ -114,7 +114,7 @@ end
 	Finalises the gift when the Roblox receipt fires.
 
 	onApply is a callback provided by VIPService — it handles updating
-	the in-memory buffer and Replica for online players. VIPGiftingManager
+	the in-memory buffer and Replica for online players. VIPGiftingService
 	does not know about buffers or Replica; it only orchestrates the flow.
 
 	Returns true if the gift was applied (online or offline).
@@ -127,10 +127,10 @@ end
 	a pending grant flag to the target's profile. VIPService reads this
 	flag on the target's next login and applies VIP then.
 ]]
-function VIPGiftingManager.processReceipt(
+function VIPGiftingService.processReceipt(
 	granterUserId : number,
 	onApply       : (targetPlayer: Player) -> ()
-)
+) : boolean
 	local entry = _queue[granterUserId]
 	if entry == nil then
 		log:warn("processReceipt: no queue entry found for granterUserId {}", granterUserId)
@@ -166,7 +166,6 @@ function VIPGiftingManager.processReceipt(
 			return false
 			-- caller can decide whether to refund
 		end)
-	end
 end
 
 --[[
@@ -176,11 +175,11 @@ end
 	Called by VIPService.init() on PlayerRemoving in case the granter
 	leaves the server mid-purchase.
 ]]
-function VIPGiftingManager.clearQueue(userId: number)
+function VIPGiftingService.clearQueue(userId: number)
 	if _queue[userId] ~= nil then
 		log:debug("Gift queue cleared for UserId {} (player left)", userId)
 		_queue[userId] = nil
 	end
 end
 
-return VIPGiftingManager
+return VIPGiftingService

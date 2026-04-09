@@ -1,4 +1,5 @@
 --!strict
+--!native
 
 local tinsert = table.insert
 local tremove = table.remove

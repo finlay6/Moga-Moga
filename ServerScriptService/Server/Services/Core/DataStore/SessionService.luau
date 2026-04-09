@@ -32,16 +32,14 @@ local Core     = Services.Core
 
 local Logger               = require(Shared.Util.Logger)
 local ProfileTypes         = require(Shared.Types.ProfileTypes)
-local DataStoreService     = require(Core.DataStore.DataStoreService)
+local PersistenceService     = require(Core.DataStore.PersistenceService)
 local DataMigrationService = require(Core.DataStore.DataMigrationService)
-local Promise = require(Shared.Packages.Promise)
 local DataStoreConstants = require(Constants.Core.DataStoreConstants)
 
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local osTime    = os.time
 local taskSpawn = task.spawn
-local taskWait  = task.wait
 
 -- ─── Types ───────────────────────────────────────────────────────────────────
 export type Profile     = ProfileTypes.Profile
@@ -114,34 +112,18 @@ end
 
 -- ─── Private: Player Lifecycle ───────────────────────────────────────────────
 
-function WaitForProfile(player: Player)
-    -- 1. Already loaded? Resolve instantly.
-    if _profiles[player] then
-        return Promise.resolve(_profiles[player])
-    end
-
-    -- 2. Currently loading? Return the active promise.
-    if _profilePromises[player] then
-        return _profilePromises[player]
-    end
-
-    -- 3. Player doesn't exist / isn't in the server.
-    return Promise.reject("Player is not in the server or not loading.")
-end
-
 local function _onPlayerAdded(player: Player)
-    local loadPromise = Promise.new(function(resolve, reject)
         -- 1. Load profile (yields — may take several frames)
-        local profile = DataStoreService.LoadProfile(player)
+        local profile = PersistenceService.LoadProfile(player)
         if profile == nil then
-            return reject("DataStoreService rejected the load.")
+            return
         end
 
         -- 2. Guard: player may have left while we were loading.
         if not player:IsDescendantOf(Players) then
             profile:EndSession()
             log:debug("Player {} left during profile load — session ended immediately", player.Name)
-            return reject("Player left during load.")
+			return
         end
 
         -- 3. Handle unexpected session loss (ProfileStore ownership stolen, etc.)
@@ -163,7 +145,7 @@ local function _onPlayerAdded(player: Player)
             profile:EndSession()
             player:Kick(KICK_MIGRATION_FAILED_MSG)
             log:error("Migration failed for {} — session ended", player.Name)
-            return reject("Migration failed.")
+			return
         end
 
         -- 5. Stamp join metadata now that the data is confirmed safe.
@@ -171,19 +153,6 @@ local function _onPlayerAdded(player: Player)
 
         -- 6. Publish to the active map
         _profiles[player] = profile
-        resolve(profile)
-    end)
-
-    -- Cache the promise so WaitForProfile can return it
-    _profilePromises[player] = loadPromise
-
-    -- Catch rejections internally so we don't get unhandled promise warnings
-    -- (We ignore cancellations because that just means the player left gracefully)
-    loadPromise:catch(function(err)
-        if err ~= Promise.Error.Cancelled and err ~= "Player left during load." then
-            log:warn("Failed to load session for {}: {}", player.Name, tostring(err))
-        end
-    end)
 end
 
 local function _onPlayerRemoving(player: Player)

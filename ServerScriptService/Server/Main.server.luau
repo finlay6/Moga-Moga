@@ -7,7 +7,7 @@ local Economy = ServicesFolder.Economy
 local VIP = ServicesFolder.Player.VIP
 
 local Services = {
-	require(DataStore.PersistanceService),
+	require(DataStore.PersistenceService),
 	require(DataStore.SessionService),
 	require(DataStore.StateService),
 	require(Economy.EconomyService),

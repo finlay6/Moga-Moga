@@ -15,15 +15,12 @@ local VIPTypes = {}
 -- Re-exported as a type so callers can annotate tier parameters without
 -- importing VIPConstants at the type level.
 export type Tier = number -- 0 = None, 1 = Standard, 2 = Premium
-export type TierLabel = "None" | "Standard" | "Premium"
 -- ─── VIPStatus ────────────────────────────────────────────────────────────────
 -- The canonical per-player VIP snapshot.
 -- Lives in the server-side status cache and is written into profile.Data.VIP
 -- on every resolve so it survives session end.
 export type VIPStatus = {
 	isVIP      : boolean,
-	tier       : Tier,
-	tierLabel  : TierLabel,   -- "None" | "Standard" | "Premium"
 	expiresAt  : number,   -- Unix timestamp; 0 = permanent (gamepass-based)
 	grantedAt  : number,   -- Unix timestamp of first confirmation this session
 }
