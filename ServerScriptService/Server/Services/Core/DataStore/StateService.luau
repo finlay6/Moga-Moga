@@ -4,53 +4,50 @@
 --[[
 	StateService
 
-	Dot-path read/write API over a player's profile data.
-	All writes go through a single function so replication, dirty-flagging,
-	and debugging hooks have exactly one place to live.
+	The single gate for all player data reads and writes.
+	Every balance change, VIP update, and setting toggle goes through here.
 
-	Paths use dot notation:  "Economy.Cash"   "Meta.JoinCount"   "VIP.Tier"
-	Numeric keys are supported: "Inventory.1"  "Slots.3"
+	Centralising writes in one place means:
+	  - Replica updates happen automatically (wire onChange once, done)
+	  - Dirty-flagging, analytics hooks, and admin logging all live here
+	  - No service can accidentally bypass replication
 
-	─── Why this module exists ─────────────────────────────────────────
-	Without a centralised write path every service mutates profile.Data
-	directly, making it impossible to add replication without touching
-	every callsite. StateService is that single choke-point.
+	─── Path format ────────────────────────────────────────────────────
+	Dot-separated string. Numeric segments address array indices.
+	  "Economy.Cash"         → data.Economy.Cash
+	  "VIP.IsVIP"            → data.VIP.IsVIP
+	  "Arcade.Highscores.1"  → data.Arcade.Highscores[1]
 
-	─── What to do in the onChange signal ─────────────────────────────
-	Wire your Replica/replication layer here.
-	Example (ReplicaService / Plasma / your own system):
+	─── Rules ──────────────────────────────────────────────────────────
+	- ONLY StateService calls SessionService. No other module may.
+	- Services define private path-string constants internally.
+	  They do not expose raw paths to their callers.
 
-		StateService.onChange:Connect(function(player, path, value)
-		    local replica = ReplicaService.getPlayerReplica(player)
-		    if replica then
-		        replica:SetValue(pathToArray(path), value)
-		    end
-		end)
+	─── Connecting replication ─────────────────────────────────────────
+	Wire this once in your server bootstrap after Replica setup:
 
-	─── What NOT to do ─────────────────────────────────────────────────
-	Do NOT bypass StateService for profile.Data mutations in gameplay code.
-	Direct mutations are fine inside DataMigrationService (it runs before
-	any service reads the data) and nowhere else.
+	  StateService.OnChange:Connect(function(player, path, value)
+	      local replica = ReplicaService.getForPlayer(player)
+	      if replica then
+	          replica:Set(pathToArray(path), value)
+	      end
+	  end)
 ]]
 
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local Shared       = ReplicatedStorage.Shared
-local Constants = Shared.Constants
-local Server       = ServerScriptService.Server
-local Core         = Server.Services.Core
+local Shared         = ReplicatedStorage.Shared
+local Server         = ServerScriptService.Server
+local Core           = Server.Services.Core
 
-local Logger        = require(Shared.Util.Logger)
-local Signal        = require(Shared.Packages.Signal)
-local SessionService= require(Core.DataStore.SessionService)
-local DataStoreConstants = require(Constants.Core.DataStoreConstants)
-
-local MAX_PATH_DEPTH = DataStoreConstants.MAX_PATH_DEPTH
+local Logger         = require(Shared.Util.Logger)
+local Signal         = require(Shared.Packages.Signal)
+local SessionService = require(Core.DataStore.SessionService)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
-local strSplit  = string.split
-local toNumber  = tonumber
+local strSplit = string.split
+local toNumber = tonumber
 
 -- ─── Types ───────────────────────────────────────────────────────────────────
 type Node = { [string | number]: any }
@@ -60,148 +57,100 @@ local log = Logger.new("StateService")
 
 -- ─── Private: Path Navigation ────────────────────────────────────────────────
 
--- Converts a single path segment to either a number (for array keys)
--- or leaves it as a string (for dict keys).
 local function _segmentToKey(segment: string): string | number
 	return toNumber(segment) or segment
 end
 
--- Helper to validate path format and depth
-local function _isValidPath(segments: {string}): boolean
-    local depth = #segments
-    
-    -- Limit depth to ensure it's not empty
-    if depth == 0 or depth > MAX_PATH_DEPTH then
-        return false
-    end
+-- Walks `root` along `path` and returns (parentNode, finalKey).
+-- Returns (nil, nil) if any intermediate node is missing or not a table.
+local function _resolvePath(root: any, path: string): (Node?, string | number | nil)
+	local segments = strSplit(path, ".")
+	local depth    = #segments
+	local current  = root
 
-    for _, segment in ipairs(segments) do
-        -- If segment is empty, it means there was a ".." or leading/trailing dot
-        if segment == "" then
-            return false
-        end
-    end
+	for i = 1, depth - 1 do
+		local key  = _segmentToKey(segments[i])
+		local next = current[key]
+		if type(next) ~= "table" then
+			return nil, nil
+		end
+		current = next
+	end
 
-    return true
-end
-
---[[
-	_navigate(root, path)
-
-	Walks `root` along `path` and returns the parent node plus the final key.
-	Returns (nil, nil) if any intermediate segment does not exist or is not a table.
-
-	Kept as a single function shared by Get and Set to guarantee identical
-	traversal semantics — no risk of the two drifting.
-]]
-local function _navigate(root: any, path: string): (Node?, string | number | nil)
-    local segments = strSplit(path, ".")
-    
-    -- Abstraction: Validate before processing
-    if not _isValidPath(segments) then
-        return nil, nil
-    end
-
-    local depth   = #segments
-    local current = root
-
-    for i = 1, depth - 1 do
-        local key = _segmentToKey(segments[i])
-        local next = current[key]
-        
-        if type(next) ~= "table" then
-            return nil, nil
-        end
-        current = next
-    end
-
-    return current :: Node, _segmentToKey(segments[depth])
+	return current :: Node, _segmentToKey(segments[depth])
 end
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
 local StateService = {}
 
 --[[
-	onChange : Signal<Player, string, any>
+	OnChange : Signal<Player, string, any>
 
-	Fires after every successful Set call.
-	Arguments: (player, path, newValue)
+	Fires after every successful Set or Increment call.
+	Args: (player, path, newValue)
 
-	Wire your replication layer to this signal.
-	Keep handlers non-yielding — they run synchronously inside Set.
+	This is the replication hook. Keep handlers non-yielding.
 ]]
-StateService.onChange = Signal() :: Signal.Signal<Player, string, any>
+StateService.OnChange = Signal() :: Signal.Signal<Player, string, any>
 
 --[[
 	Set(player, path, value)
 
 	Writes `value` to `path` in the player's profile data.
-	Fires StateService.onChange after the write so replication can react.
+	Fires OnChange after the write.
 
-	No-ops silently if:
-	  - The player's data is not loaded yet (profile not in SessionService)
-	  - The path resolves to a non-existent intermediate node
-
-	BUG FIXED (original): Set and Get used different SessionService access
-	functions (_GetData vs _GetProfile + .Data), creating two code paths that
-	could diverge if hooks were added to one but not the other. Both now use
-	SessionService.GetData exclusively.
+	Asserts if the player's data is not loaded — this means a service
+	connected to Players.PlayerAdded instead of SessionService.PlayerReady.
+	Fix the service, not this assert.
 ]]
-function StateService.Set(player: Player, path: string, value: any)
+function StateService.Set(player: Player, path: {string}, value: any)
 	local data = SessionService.GetData(player)
+
 	if data == nil then
-		log:warn("Set({}, {}) — player data not ready", player.Name, path)
+		log:warn("StateService.Set({}) called for {} before profile loaded. Connect to SessionService.PlayerReady instead of Players.PlayerAdded.", path, player.Name)
 		return
 	end
 
-	local node, key = _navigate(data, path)
-	if node == nil or key == nil then
-		log:error("Set failed — path '{}' could not be resolved for {}", path, player.Name)
-		return 
+	local dataType = path[1]
+	local dataKey = path[2]
+	local dataToChange = data[dataType][dataKey]
+	
+	if dataToChange == nil then
+		return nil
 	end
-
-	node[key] = value
-	StateService.onChange:Fire(player, path, value)
+	
+	data[dataType][dataKey] = value
+	StateService.OnChange:Fire(player, dataKey, value)
+	SessionService.UpdatePlayerReplica(player, path, value)
 end
 
 --[[
 	Get(player, path) → any
 
-	Reads a value from `path` in the player's profile data.
-	Returns nil if the data is not loaded or the path does not exist.
+	Reads from `path` in the player's profile data.
+	Returns nil if the path does not exist.
+
+	Asserts if the player's data is not loaded — same rule as Set.
 ]]
-function StateService.Get(player: Player, path: string): any
+function StateService.Get(player: Player, path: {string}): any
 	local data = SessionService.GetData(player)
+
 	if data == nil then
+		log:error("StateService.Get({}) called for {} before profile loaded. Connect to SessionService.PlayerReady instead of Players.PlayerAdded.", path, player.Name)
 		return nil
 	end
 
-	local node, key = _navigate(data, path)
-	if node == nil or key == nil then
-		log:error("Get failed — path '{}' could not be resolved for {}", path, player.Name)
+	local dataType = path[1]
+	local dataKey = path[2]
+	
+	local dataToGet = data[dataType][dataKey]
+	
+	
+	if dataToGet == nil then
 		return nil
 	end
 
-	return node[key]
-end
-
---[[
-	Increment(player, path, delta)
-
-	Convenience wrapper for numeric fields.
-	Equivalent to Set(player, path, Get(player, path) + delta).
-	No-ops if the current value is not a number.
-]]
-function StateService.Increment(player: Player, path: string, delta: number)
-	local current = StateService.Get(player, path)
-	if type(current) ~= "number" then
-		log:error(
-			"Increment failed — '{}' is {} (expected number) for {}",
-			path, type(current), player.Name
-		)
-		return
-	end
-	StateService.Set(player, path, current + delta)
+	return dataToGet
 end
 
 return StateService

@@ -8,16 +8,29 @@
 	and finalising data on leave.
 
 	Responsibilities:
-	  - Loading profiles via DataStoreService (yields, handles failures)
+	  - Loading profiles via PersistenceService (yields, handles failures)
 	  - Running DataMigrationService once per session after load
-	  - Initialising and finalising Meta fields (join time, play time, etc.)
-	  - Providing a safe read-access API for other services (GetData, GetProfile)
-	  - Exposing WaitForProfile for services that race the load
+	  - Stamping Meta fields (join time, play time, session count)
+	  - Providing GetData / GetProfile for StateService
+	  - Firing PlayerReady after data is confirmed safe
 
 	Does NOT:
-	  - Write gameplay data (EconomyService, VIPService own their sections)
-	  - Know what's inside profile.Data beyond the Meta section
-	  - Own the persistence mechanism (DataStoreService does that)
+	  - Write gameplay data (that is EconomyService, VIPService, etc.)
+	  - Know what is inside profile.Data beyond the Meta section
+	  - Own the persistence mechanism (PersistenceService does that)
+
+	─── PlayerReady signal ─────────────────────────────────────────────
+	Fire order guarantee:
+	  1. Profile loaded
+	  2. Migration applied
+	  3. Meta stamped
+	  4. Profile inserted into _profiles
+	  5. PlayerReady fires
+
+	Any service that needs player data on join should connect to
+	SessionService.PlayerReady instead of Players.PlayerAdded.
+	By the time PlayerReady fires, StateService.Get will never return nil
+	for that player.
 ]]
 
 local Players             = game:GetService("Players")
@@ -25,17 +38,17 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Shared   = ReplicatedStorage.Shared
-local Constants = Shared.Constants
 local Server   = ServerScriptService.Server
-local Services = Server.Services
-local Core     = Services.Core
+local Core     = Server.Services.Core
+local Packages = Server.Packages
 
 local Logger               = require(Shared.Util.Logger)
+local Signal               = require(Shared.Packages.Signal)
 local ProfileTypes         = require(Shared.Types.ProfileTypes)
-local PersistenceService     = require(Core.DataStore.PersistenceService)
+local PersistenceService   = require(Core.DataStore.PersistenceService)
 local DataMigrationService = require(Core.DataStore.DataMigrationService)
-local DataStoreConstants = require(Constants.Core.DataStoreConstants)
 
+local Replica = require(Packages.ReplicaServer)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local osTime    = os.time
@@ -46,32 +59,27 @@ export type Profile     = ProfileTypes.Profile
 export type ProfileData = ProfileTypes.ProfileData
 
 -- ─── Constants ───────────────────────────────────────────────────────────────
-local KICK_MIGRATION_FAILED_MSG  = DataStoreConstants.KICK_MIGRATION_FAILED_MSG
+local KICK_MIGRATION_FAILED =
+	"Your save data could not be migrated safely. "
+	.. "Please contact support — your data is safe, do not rejoin repeatedly."
 
 -- ─── State ───────────────────────────────────────────────────────────────────
 local log = Logger.new("SessionService")
 
--- Active profile map. Profiles are inserted here only after migration succeeds.
--- All other services should treat a nil entry as "player data not ready yet".
+-- Profiles are inserted here only after migration succeeds and meta is stamped.
+-- A nil entry means the player's data is not ready yet.
 local _profiles: { [Player]: Profile } = {}
-local _profilePromises: { [Player]: any } = {}
+local _playerReplicas = {}
 
--- ─── Private: Meta Helpers ───────────────────────────────────────────────────
+-- ─── Module ──────────────────────────────────────────────────────────────────
+local SessionService = {}
 
---[[
-	_initMeta(player, data)
+local PlayerToken = Replica.Token("PlayerData")
 
-	Called once per session after a profile is loaded and migrated.
-	Sets join metadata. Does NOT touch LastSeenAt — that field is for
-	disconnects only. SessionStartAt tracks when THIS session began.
+-- ─── Private: Meta ───────────────────────────────────────────────────────────
 
-	BUG FIXED (original code): LastSeenAt was used as both "session start"
-	and "last disconnect". This caused TotalPlayTime to be calculated from
-	the last DISCONNECT time (wrong) rather than the current JOIN time (correct).
-	SessionStartAt is now a dedicated field that lives only for the session duration.
-]]
-local function _initMeta(player: Player, data: ProfileData)
-	local now = osTime()
+local function _stampJoinMeta(player: Player, data: ProfileData)
+	local now  = osTime()
 	local meta = data.Meta
 
 	if meta.CreatedAt == 0 then
@@ -79,113 +87,144 @@ local function _initMeta(player: Player, data: ProfileData)
 		log:info("First-ever join for {} ({})", player.Name, player.UserId)
 	end
 
-	-- Record when THIS session started.
-	-- finalizeMetaData reads this field — not LastSeenAt.
 	meta.SessionStartAt = now
 	meta.JoinCount      += 1
-
-	log:debug(
-		"Meta initialised for {} — join #{}, started at {}",
-		player.Name, meta.JoinCount, now
-	)
 end
 
---[[
-	_finaliseMeta(data)
-
-	Called on PlayerRemoving before EndSession.
-	Accumulates total play time using SessionStartAt (not LastSeenAt).
-	Updates LastSeenAt to now so we know when they last disconnected.
-]]
-local function _finaliseMeta(data: ProfileData)
+local function _stampLeaveMeta(data: ProfileData)
 	local now  = osTime()
 	local meta = data.Meta
 
 	if meta.SessionStartAt > 0 then
-		local sessionLength = now - meta.SessionStartAt
-		meta.TotalPlayTime  += sessionLength
+		meta.TotalPlayTime += now - meta.SessionStartAt
 	end
 
 	meta.LastSeenAt     = now
-	meta.SessionStartAt = 0 -- reset so a stale value can't corrupt the next session
+	meta.SessionStartAt = 0
 end
 
--- ─── Private: Player Lifecycle ───────────────────────────────────────────────
+local function _makePlayerReplica(player: Player, data: ProfileData)
+	local replica = Replica.New({
+		Token = PlayerToken,
+		Tags = {UserId = player.UserId},
+		Data = data,
+	})
+	
+	replica:Subscribe(player)
+
+	return replica
+end
+
+-- ─── Private: Lifecycle ──────────────────────────────────────────────────────
 
 local function _onPlayerAdded(player: Player)
-        -- 1. Load profile (yields — may take several frames)
-        local profile = PersistenceService.LoadProfile(player)
-        if profile == nil then
-            return
-        end
+	local profile = PersistenceService.LoadProfile(player)
+	if profile == nil then
+		return  -- PersistenceService already kicked the player
+	end
 
-        -- 2. Guard: player may have left while we were loading.
-        if not player:IsDescendantOf(Players) then
-            profile:EndSession()
-            log:debug("Player {} left during profile load — session ended immediately", player.Name)
-			return
-        end
+	if not player:IsDescendantOf(Players) then
+		profile:EndSession()
+		log:debug("{} left during profile load — session ended immediately", player.Name)
+		return
+	end
 
-        -- 3. Handle unexpected session loss (ProfileStore ownership stolen, etc.)
-        profile.OnSessionEnd:Connect(function()
-            if _profiles[player] then
-                _profiles[player] = nil
-                log:warn("Profile session ended unexpectedly for {} — kicking", player.Name)
-                player:Kick("Your data session ended unexpectedly. Please rejoin.")
-            end
-        end)
+	profile.OnSessionEnd:Connect(function()
+		if _profiles[player] then
+			_profiles[player] = nil
+			log:warn("Profile session ended unexpectedly for {} — kicking", player.Name)
+			player:Kick("Your data session ended unexpectedly. Please rejoin.")
+		end
+	end)
 
-        profile.OnAfterSave:Connect(function()
-            log:debug("Auto-save completed for {}", player.Name)
-        end)
+	local migrationOk = DataMigrationService.migrate(profile.Data)
+	if not migrationOk then
+		profile:EndSession()
+		player:Kick(KICK_MIGRATION_FAILED)
+		log:error("Migration failed for {} — session ended", player.Name)
+		return
+	end
 
-        -- 4. Run migrations before any other service reads the data.
-        local migrationOk = DataMigrationService.migrate(profile.Data)
-        if not migrationOk then
-            profile:EndSession()
-            player:Kick(KICK_MIGRATION_FAILED_MSG)
-            log:error("Migration failed for {} — session ended", player.Name)
-			return
-        end
+	_stampJoinMeta(player, profile.Data)
 
-        -- 5. Stamp join metadata now that the data is confirmed safe.
-        _initMeta(player, profile.Data)
+	-- Insert before firing so any PlayerReady handler that calls GetData
+	-- immediately gets a non-nil result.
+	_profiles[player] = profile
 
-        -- 6. Publish to the active map
-        _profiles[player] = profile
+	local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
+	_playerReplicas[player] = thisPlayerReplica
+
+	log:info(
+		"Session ready for {} — join #{}, DataVersion {}",
+		player.Name,
+		profile.Data.Meta.JoinCount,
+		profile.Data.Meta.DataVersion
+	)
+
+	SessionService.PlayerReady:Fire(player)
 end
 
 local function _onPlayerRemoving(player: Player)
-    -- Cancel and clean up the loading promise if it's still pending
-    if _profilePromises[player] then
-        _profilePromises[player]:cancel()
-        _profilePromises[player] = nil
-    end
+	local profile = _profiles[player]
+	if profile == nil then return end
 
-    local profile = _profiles[player]
-    if profile == nil then return end
+	_profiles[player] = nil
+	_stampLeaveMeta(profile.Data)
+	profile:EndSession()
 
-    -- Remove from map first
-    _profiles[player] = nil
-
-    _finaliseMeta(profile.Data)
-    profile:EndSession()
-
-    log:debug("Session finalised for {}", player.Name)
+	log:debug("Session finalised for {}", player.Name)
 end
 
--- ─── Public API ──────────────────────────────────────────────────────────────
+local function _updatePlayerReplica(player: Player, path: {string}, value: any)
+	local thisPlayerReplica = _playerReplicas[player]
+	
+	if thisPlayerReplica == nil then
+		log:error("Player Plum not found, Player: {}", player.Name)
+		return
+	end
 
-local SessionService = {}
+	thisPlayerReplica:Set(path, value)
+end
 
 --[[
-	init()
+	PlayerReady : Signal<Player>
 
-	Wires up PlayerAdded / PlayerRemoving and handles players
-	already in the server (Studio testing, fast-loaded scripts).
+	Fires after the profile is loaded, migrated, and meta-stamped.
+	StateService.Get is safe to call for this player from this point on.
+
+	Use this instead of Players.PlayerAdded in any service that reads
+	or writes player data on join.
 ]]
+SessionService.PlayerReady = Signal() :: Signal.Signal<Player>
+
+--[[
+	GetProfile(player) → Profile?
+
+	Returns the full Profile object, or nil if not yet loaded.
+	Prefer GetData when you only need profile.Data.
+]]
+function SessionService.GetProfile(player: Player): Profile?
+	return _profiles[player]
+end
+
+--[[
+	GetData(player) → ProfileData?
+
+	Returns the raw data table, or nil if the profile is not yet loaded.
+	Only StateService should call this.
+]]
+function SessionService.GetData(player: Player): ProfileData?
+	local profile = _profiles[player]
+	return if profile ~= nil then profile.Data else nil
+end
+
+function SessionService.UpdatePlayerReplica(player: Player, path: {string}, value: any)
+	_updatePlayerReplica(player, path, value)
+end
+
+-- ─── Lifecycle ───────────────────────────────────────────────────────────────
+
 function SessionService.init()
-	-- Handle players already present before this script ran.
 	for _, player in Players:GetPlayers() do
 		taskSpawn(_onPlayerAdded, player)
 	end
@@ -198,36 +237,5 @@ function SessionService.init()
 
 	log:info("SessionService initialised")
 end
-
---[[
-	GetProfile(player) → Profile?
-
-	Returns the full Profile object, or nil if not yet loaded.
-	Prefer GetData when you only need to read profile.Data.
-]]
-function SessionService.GetProfile(player: Player): Profile?
-	return _profiles[player]
-end
-
---[[
-	GetData(player) → ProfileData?
-
-	Convenience accessor for the raw data table.
-	Returns nil if the player's profile is not yet in the active map.
-]]
-function SessionService.GetData(player: Player): ProfileData?
-	local profile = _profiles[player]
-	return if profile ~= nil then profile.Data else nil
-end
-
---[[
-	WaitForProfile(player, timeout?) → Profile?
-
-	Yields the calling coroutine until the profile is loaded or timeout expires.
-	Default timeout is 10 seconds. Returns nil on timeout.
-
-	Use this in services that are spawned concurrently with SessionService
-	(e.g. VIPService.start) and need to be certain the data is ready.
-]]
 
 return SessionService

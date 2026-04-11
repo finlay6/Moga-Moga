@@ -67,7 +67,7 @@ MAD STUDIO HUHUHUH
 
 ----- Dependencies -----
 
-local ReplicaShared = game:GetService("className").ReplicaShared
+local ReplicaShared = game:GetService("ReplicatedStorage").ReplicaShared
 local Remote = require(ReplicaShared.Remote)
 local Signal = require(ReplicaShared.Signal)
 local Maid = require(ReplicaShared.Maid)

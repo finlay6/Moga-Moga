@@ -143,9 +143,9 @@ local function _apply(
 ): TransactionResult
 
 	-- 1. Data access — BUG FIXED: original called DataService.getData (crashed)
-	local currencyPath = `Economy.{currencyType}`
-	local totalEarnedPath = `Economy.Total{currencyType}Earned`
-	local totalSpentPath = `Economy.Total{currencyType}Spent`
+	local currencyPath = {"Economy", currencyType}
+	local totalEarnedPath = {"Economy", `Total{currencyType}Earned`}
+	local totalSpentPath = {"Economy", `Total{currencyType}Spent`}
 
 	local currentBalance: number = StateService.Get(player, currencyPath)
 	local currentTotalEarned = StateService.Get(player, totalEarnedPath)
@@ -310,7 +310,7 @@ function EconomyService.GetBalance(
 	player      : Player,
 	currencyType: CurrencyType
 ): number?
-	local currencyPath = `Economy.{currencyType}`
+	local currencyPath = {"Economy", currencyType}
 	local currentBalance = StateService.Get(player, currencyPath)
 	if currentBalance == nil then return nil end
 	return currentBalance

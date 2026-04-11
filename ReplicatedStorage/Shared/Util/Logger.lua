@@ -19,7 +19,7 @@ local Level = table.freeze({
 
 local Config = {
 	MinLevel    = Level.DEBUG,
-	ShowTime    = true,
+	ShowTime    = false,
 }
 
 -- ─── Internal ─────────────────────────────────────────────────────────────────
@@ -37,7 +37,6 @@ local CONTEXT = if RunService:IsServer() then "Server" else "Client"
 -- Shared memory pool to avoid heap allocations during log emission
 local SCRATCH_PARTS: { string } = table.create(8)
 local SCRATCH_ARGS: { any }     = table.create(16)
-local _clockBuf = buffer.create(8)
 
 local function interpolate(template: string, args: { any }): string
 	local i = 0
@@ -50,7 +49,6 @@ end
 
 local function emit(level: number, instancePrefix: string, template: string, ...)
 	if level < Config.MinLevel then return end
-
 	-- 1. Grab varargs without allocating a new table if possible
 	-- In Luau, {...} is a heap allocation. We use table.pack/unpack logic or a pool.
 	tclear(SCRATCH_ARGS)
@@ -63,8 +61,7 @@ local function emit(level: number, instancePrefix: string, template: string, ...
 	tclear(SCRATCH_PARTS)
 
 	if Config.ShowTime then
-		buffer.writef64(_clockBuf, 0, osClock())
-		table.insert(SCRATCH_PARTS, format("[%.3fs]", buffer.readf64(_clockBuf, 0)))
+		table.insert(SCRATCH_PARTS, format("[%.3fs]", osClock()))
 	end
 
 	-- instancePrefix already contains [CONTEXT] and [TAG]

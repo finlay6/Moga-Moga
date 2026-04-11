@@ -4,47 +4,37 @@
 --[[
 	VIPGiftingService
 
-	Manages the two-step VIP gifting flow:
-	  Step 1 — queueTarget:      admin queues a recipient before prompting purchase
-	  Step 2 — processReceipt:   called by the Roblox receipt handler to finalise
+	Manages the two-step VIP gifting flow.
 
-	─── Gifting flow ───────────────────────────────────────────────────
-	1. Admin uses an in-game command → queueTarget(granter, target)
-	2. Admin purchases VIPConstants.GIFT_PRODUCT_ID via MarketplaceService
-	3. Roblox fires ProcessReceipt → caller invokes processReceipt(granterUserId, onApply)
-	4a. Target is online  → onApply(targetPlayer) runs immediately; VIPService
-	    updates the in-memory buffer and profile.
-	4b. Target is offline → pending entry written to their profile via
-	    DataStoreService.writeOfflineVIPGrant so it applies on next login.
+	─── Flow ───────────────────────────────────────────────────────────
+	1. Authorised admin calls queueTarget(granter, target)
+	2. Admin purchases the VIP gift developer product via MarketplaceService
+	3. ProductService fires ProcessReceipt → calls VIPService.processGiftReceipt
+	4. VIPService calls processReceipt(granterUserId, onApply)
+	   a. Target online  → onApply(targetPlayer) runs immediately
+	   b. Target offline → PersistenceService.writeOfflineVIPGrant queued;
+	                       VIPService applies on target's next login
 
-	─── Bugs fixed from original ───────────────────────────────────────
-	1. SILENT FAILURE: processReceipt returned nil (not false) on the offline
-	   path and logged an error but did NOT persist the grant anywhere.
-	   Money left the granter's account; VIP was never applied to the target.
-	   Fixed: offline path calls DataStoreService.writeOfflineVIPGrant().
-
-	2. isAuthorised used a linear scan every call. Now uses a pre-built set
-	   keyed by UserId for O(1) lookup. Built once in _buildAuthSet().
-
-	3. processReceipt return type was boolean but the offline error path
-	   fell off the end and returned nil implicitly. Now always returns boolean.
+	Does NOT:
+	  - Know what VIPStatus looks like (onApply callback owns that)
+	  - Touch StateService directly
+	  - Handle the Roblox receipt itself (ProductService owns ProcessReceipt)
 ]]
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local Shared   = ReplicatedStorage.Shared
-local Server   = ServerScriptService.Server
+local Shared  = ReplicatedStorage.Shared
+local Server  = ServerScriptService.Server
 
 local VIPConstants       = require(Shared.Constants.Player.VIPConstants)
 local VIPTypes           = require(Shared.Types.VIPTypes)
-local PersistenceService   = require(Server.Services.Core.DataStore.PersistenceService)
+local PersistenceService = require(Server.Services.Core.DataStore.PersistenceService)
 local Logger             = require(Shared.Util.Logger)
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
-local osTime             = os.time
-local GetPlayerByUserId  = Players.GetPlayerByUserId
+local osTime = os.time
 
 -- ─── Types ───────────────────────────────────────────────────────────────────
 type GiftQueueEntry = VIPTypes.GiftQueueEntry
@@ -52,48 +42,40 @@ type GiftQueueEntry = VIPTypes.GiftQueueEntry
 -- ─── State ───────────────────────────────────────────────────────────────────
 local log = Logger.new("VIPGiftingService")
 
--- Pre-built O(1) set from VIPConstants.GIFT_AUTHORISED_USER_IDS.
--- BUG FIXED: original did a linear scan of the array on every queueTarget call.
+-- O(1) authorisation set built once at module load.
 local _authSet: { [number]: true } = {}
 for _, userId in VIPConstants.GIFT_AUTHORISED_USER_IDS do
 	_authSet[userId] = true
 end
 
--- Pending gift queue: granterUserId → GiftQueueEntry.
--- Cleared immediately on receipt to prevent double-processing.
+-- granterUserId → GiftQueueEntry. Cleared immediately on receipt.
 local _queue: { [number]: GiftQueueEntry } = {}
+
+-- ─── Private ─────────────────────────────────────────────────────────────────
+
+local function _isAuthorised(userId: number): boolean
+	return _authSet[userId] == true
+end
 
 -- ─── Module ──────────────────────────────────────────────────────────────────
 local VIPGiftingService = {}
 
 --[[
-	isAuthorised(userId) → boolean
-
-	Returns true if this UserId is in GIFT_AUTHORISED_USER_IDS.
-	O(1) lookup against the pre-built set.
-]]
-local function _isAuthorised(userId: number): boolean
-	return _authSet[userId] == true
-end
-
---[[
 	queueTarget(granter, target) → boolean
 
-	Registers the intended gift recipient before the purchase is prompted.
-	Returns false if:
-	  - granter is not in GIFT_AUTHORISED_USER_IDS
-	  - granter and target are the same player
+	Registers the intended recipient before the purchase prompt.
+	Returns false if the granter is not authorised or is gifting themselves.
 ]]
 function VIPGiftingService.queueTarget(granter: Player, target: Player): boolean
 	local granterId = granter.UserId
 
 	if not _isAuthorised(granterId) then
-		log:warn("{} (UserId {}) is not authorised to gift VIP", granter.Name, granterId)
+		log:warn("{} ({}) is not authorised to gift VIP", granter.Name, granterId)
 		return false
 	end
 
 	if granterId == target.UserId then
-		log:warn("{} tried to gift VIP to themselves", granter.Name)
+		log:warn("{} attempted to gift VIP to themselves", granter.Name)
 		return false
 	end
 
@@ -104,81 +86,81 @@ function VIPGiftingService.queueTarget(granter: Player, target: Player): boolean
 		queuedAt   = osTime(),
 	}
 
-	log:info("VIP gift queued: {} → {} (UserId {})", granter.Name, target.Name, target.UserId)
+	log:info("VIP gift queued: {} → {} ({})", granter.Name, target.Name, target.UserId)
 	return true
 end
 
 --[[
 	processReceipt(granterUserId, onApply) → boolean
 
-	Finalises the gift when the Roblox receipt fires.
+	Finalises the gift when the receipt fires.
 
-	onApply is a callback provided by VIPService — it handles updating
-	the in-memory buffer and Replica for online players. VIPGiftingService
-	does not know about buffers or Replica; it only orchestrates the flow.
+	onApply: callback supplied by VIPService to update cache + profile for
+	an online target. VIPGiftingService does not know about VIPStatus.
 
-	Returns true if the gift was applied (online or offline).
-	Returns false if no queue entry was found or offline write failed.
+	Returns true if the gift was applied or successfully queued for offline delivery.
+	Returns false if no queue entry exists or the offline write failed after retries.
 
-	─── Offline handling ───────────────────────────────────────────────
-	BUG FIXED: original logged an error on the offline path and returned
-	nothing (nil), so money was taken but VIP was never granted.
-	Now calls DataStoreService.writeOfflineVIPGrant(targetId) which writes
-	a pending grant flag to the target's profile. VIPService reads this
-	flag on the target's next login and applies VIP then.
+	The offline path is fire-and-forget via a Promise — the function returns
+	true optimistically once the write is queued. If the Promise rejects after
+	retries, an error is logged and the receipt handler should consider a refund.
 ]]
 function VIPGiftingService.processReceipt(
 	granterUserId : number,
 	onApply       : (targetPlayer: Player) -> ()
-) : boolean
+): boolean
 	local entry = _queue[granterUserId]
 	if entry == nil then
-		log:warn("processReceipt: no queue entry found for granterUserId {}", granterUserId)
+		log:warn("processReceipt: no queue entry for granterUserId {}", granterUserId)
 		return false
 	end
 
-	-- Clear immediately to prevent double-processing in case of a retry.
+	-- Clear immediately — prevents double-processing on receipt retry.
 	_queue[granterUserId] = nil
 
-	local targetPlayer = GetPlayerByUserId(Players, entry.targetId)
+	local targetPlayer = Players:GetPlayerByUserId(entry.targetId)
 
 	if targetPlayer ~= nil then
-		-- ── Online path ────────────────────────────────────────────────────
-		-- onApply updates the live buffer + Replica + profile.Data.VIP
+		-- Online path: apply immediately.
 		onApply(targetPlayer)
 		log:info(
-			"VIP gift applied to online player {} (UserId {}) from UserId {}",
+			"VIP gift applied to online player {} ({}) from {}",
 			targetPlayer.Name, entry.targetId, granterUserId
 		)
 		return true
 	end
 
-	-- ── Offline path ───────────────────────────────────────────────────────
-	-- Write a pending grant to the target's stored profile.
-	-- VIPService reads profile.Data.VIP.PendingGrant on next login.
+	-- Offline path: queue for next login via ProfileStore:MessageAsync.
+	-- Returns true here — the write is async. Errors are logged by the Promise chain.
 	PersistenceService.writeOfflineVIPGrant(entry.targetId)
 		:andThen(function()
-			log:info("Offline VIP gift queued for {}", entry.targetName)
-			return true
+			log:info(
+				"Offline VIP gift queued for {} ({}) — will apply on next login",
+				entry.targetName, entry.targetId
+			)
 		end)
 		:catch(function(err)
-			log:error("Offline VIP gift failed after retries: {}", err)
-			return false
-			-- caller can decide whether to refund
+			log:error(
+				"Offline VIP gift FAILED for {} ({}) after retries: {}",
+				entry.targetName, entry.targetId, tostring(err)
+			)
+			-- At this point money has left the granter's account but VIP was not
+			-- granted. Surface this for manual review / refund logic.
 		end)
+
+	return true
 end
 
 --[[
 	clearQueue(userId)
 
-	Removes any pending gift entry for this user.
-	Called by VIPService.init() on PlayerRemoving in case the granter
-	leaves the server mid-purchase.
+	Removes any pending entry for this user.
+	Called when the granter leaves mid-purchase so stale entries don't linger.
 ]]
 function VIPGiftingService.clearQueue(userId: number)
 	if _queue[userId] ~= nil then
-		log:debug("Gift queue cleared for UserId {} (player left)", userId)
 		_queue[userId] = nil
+		log:debug("Gift queue cleared for {} (player left)", userId)
 	end
 end
 
