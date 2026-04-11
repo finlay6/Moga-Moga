@@ -151,9 +151,6 @@ local function _onPlayerAdded(player: Player)
 	-- immediately gets a non-nil result.
 	_profiles[player] = profile
 
-	local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
-	_playerReplicas[player] = thisPlayerReplica
-
 	log:info(
 		"Session ready for {} — join #{}, DataVersion {}",
 		player.Name,
@@ -228,6 +225,12 @@ function SessionService.init()
 	for _, player in Players:GetPlayers() do
 		taskSpawn(_onPlayerAdded, player)
 	end
+	
+	Replica.NewReadyPlayer:Connect(function(player)
+		local profile = SessionService.GetProfile(player)
+		local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
+		_playerReplicas[player] = thisPlayerReplica
+	end)
 
 	Players.PlayerAdded:Connect(function(player)
 		taskSpawn(_onPlayerAdded, player)

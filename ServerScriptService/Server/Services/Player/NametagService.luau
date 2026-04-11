@@ -126,7 +126,6 @@ end
 -- ─── Private: Data resolution ────────────────────────────────────────────────
 
 local function _resolveNametagData(player: Player): NametagData
-	StateService.Set(player, PATH_DISPLAY_NAME, "SILENTBRO")
 	local displayName: string = StateService.Get(player, PATH_DISPLAY_NAME)
 	local country: string     = StateService.Get(player, PATH_COUNTRY)
 
