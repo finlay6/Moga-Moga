@@ -53,15 +53,10 @@ local StateService     = require(Server.Services.Core.DataStore.StateService)
 local SessionService   = require(Server.Services.Core.DataStore.SessionService)
 local AdminService     = require(Server.Services.Meta.AdminService)
 local Packet = require(Shared.Packages.Packet)
-local Fusion = require(Shared.Packages.Fusion)
-local NametagBillboardComponent = require(Server.UI.MainUIs.NametagUI)
+local NametagUI: BillboardGui = Shared.UI.MainUIs.NametagUI
 local UIConstants = NametagConstants.UIConstants
 
-local fusionScope = Fusion.scoped
-
-local scope = fusionScope(Fusion)
-
-local NametagDataChanged = Packet("NametagDataChanged", {CountryName = Packet.String, DisplayName = Packet.String})
+local NametagDataChanged = Packet("NametagDataChanged", {DisplayName = Packet.String, CountryName = Packet.String})
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local taskSpawn = task.spawn
@@ -82,42 +77,22 @@ local log = Logger.new("NametagService")
 -- Per-player BillboardGui references so we don't search the character each update.
 local _playerNametagDataCache = {}
 
--- Cached template clone source. Resolved once in init().
-local _template: BillboardGui
-
 -- Remote used to prompt name/country input on the client.
 -- TODO: wire to Remotes.luau once the network layer is set up.
 -- local _promptRemote: RemoteFunction
 
 -- ─── Private: Billboard construction ────────────────────────────────────────
 
-local function _createBillboard(player: Player, character: Model)
-	local displayNameValue = scope:Value("")
-	local countryValue = scope:Value("")
-	local rankValue = scope:Value("")
-	local badgeImageId = scope:Value("")
+local function _createBillboard(player: Player, character: Model): BillboardGui?
+	local head = character:FindFirstChild("Head") :: BasePart?
+	if not head then return nil end
 
-	local NametagBillboard = NametagBillboardComponent(scope, {
-		Text = {
-			NameText = displayNameValue,
-			CountryText = countryValue,
-			RankText = rankValue
-		},
-		Image = {
-			BadgeImageId = badgeImageId
-		},
-		Player = player,
-		Parent = character:WaitForChild("Head"),
-		UIConstants = UIConstants
-	})
-	
-	return {
-		Billboard = NametagBillboard :: BillboardGui,
-		DisplayNameValue = displayNameValue,
-		CountryValue = countryValue,
-		RankValue = rankValue,
-		BadgeImageId = badgeImageId
-	}
+	local billboard = NametagUI:Clone()
+	billboard.Adornee     = head
+	billboard.StudsOffset = NametagConstants.UIConstants.BILLBOARD_STUD_OFFSET
+	billboard.MaxDistance = NametagConstants.UIConstants.BILLBOARD_MAX_DISTANCE
+	billboard.Parent      = head
+	return billboard
 end
 
 -- ─── Private: Data resolution ────────────────────────────────────────────────
@@ -151,11 +126,27 @@ local function _find(billboard: BillboardGui, name: string): Instance?
 	return billboard:FindFirstChild(name, true)
 end
 
-local function _applyToBillboard(nametagData, data: NametagData)
-	nametagData.DisplayNameValue:set(data.displayName)
-	nametagData.CountryValue:set(data.country)
-	nametagData.RankValue:set(data.rankLabel)
-	nametagData.BadgeImageId:set(data.badgeImageId)
+local function _applyToBillboard(billboard: BillboardGui, data: NametagData)
+	local frame = billboard:FindFirstChild("Frame")
+	if not frame then return end
+
+	local nameLabel    = frame:FindFirstChild("NameLabel")    :: TextLabel?
+	local countryLabel = frame:FindFirstChild("CountryLabel") :: TextLabel?
+	local rankLabel    = frame:FindFirstChild("RankLabel")    :: TextLabel?
+	local badgeIcon    = frame:FindFirstChild("BadgeIcon")    :: ImageLabel?
+
+	if nameLabel    then nameLabel.Text       = data.displayName end
+	if nameLabel    then nameLabel.TextColor3 = data.nameColor   end
+	if countryLabel then countryLabel.Text    = data.country     end
+	if rankLabel    then
+		rankLabel.Text    = data.rankLabel
+		rankLabel.Visible = data.rankLabel ~= ""
+	end
+	if badgeIcon then
+		badgeIcon.Visible     = data.badgeImageId ~= ""
+		badgeIcon.Image       = data.badgeImageId
+		badgeIcon.ImageColor3 = data.badgeColor
+	end
 end
 
 -- ─── Private: First-join prompt ──────────────────────────────────────────────

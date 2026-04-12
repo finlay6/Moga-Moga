@@ -38,6 +38,9 @@ return {
 				Scope:TextInput {
 					PlaceholderText = "Twenty characters only!",
 					CharacterLimit = 20,
+					BackgroundColor3 = Theme.Colors.Primary.Main,
+					BackgroundTransparency = 0.7,
+					Tesxt
 				},
 				Scope:TextInput {
 					PlaceholderText = "Something dangerous!",

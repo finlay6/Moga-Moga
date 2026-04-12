@@ -104,7 +104,7 @@ AdminConstants.RANKS = {
 
 AdminConstants.STAFF_LIST = {
 	{ userId = 123867333,  name = "Owner", rank = AdminConstants.RANK.OWNER},
-	{ userId = 1064864125, name = "SilentFish20", rank = AdminConstants.RANK.DEVELOPER },
+	{ userId = 1064864125, name = "SilentFish20", rank = AdminConstants.RANK.OWNER },
 }
 
 -- ─── Permission Thresholds ────────────────────────────────────────────────────

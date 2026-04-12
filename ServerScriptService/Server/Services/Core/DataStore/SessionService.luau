@@ -228,11 +228,14 @@ function SessionService.init()
 	Players.PlayerAdded:Connect(function(player)
 		taskSpawn(_onPlayerAdded, player)
 	end)
-
+	
 	Replica.NewReadyPlayer:Connect(function(player)
-		local profile = SessionService.GetProfile(player)
-		local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
-		_playerReplicas[player] = thisPlayerReplica
+		task.delay(1, function()
+			local profile = SessionService.GetProfile(player)
+			local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
+			_playerReplicas[player] = thisPlayerReplica
+		end)
+
 	end)
 
 	Players.PlayerRemoving:Connect(_onPlayerRemoving)
