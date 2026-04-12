@@ -52,6 +52,16 @@ local Logger           = require(Shared.Util.Logger)
 local StateService     = require(Server.Services.Core.DataStore.StateService)
 local SessionService   = require(Server.Services.Core.DataStore.SessionService)
 local AdminService     = require(Server.Services.Meta.AdminService)
+local Packet = require(Shared.Packages.Packet)
+local Fusion = require(Shared.Packages.Fusion)
+local NametagBillboardComponent = require(Server.UI.MainUIs.NametagUI)
+local UIConstants = NametagConstants.UIConstants
+
+local fusionScope = Fusion.scoped
+
+local scope = fusionScope(Fusion)
+
+local NametagDataChanged = Packet("NametagDataChanged", {CountryName = Packet.String, DisplayName = Packet.String})
 
 -- ─── Upvalues ────────────────────────────────────────────────────────────────
 local taskSpawn = task.spawn
@@ -70,7 +80,7 @@ local PATH_COUNTRY      = {"Customisation", "Country"}
 local log = Logger.new("NametagService")
 
 -- Per-player BillboardGui references so we don't search the character each update.
-local _billboards: { [Player]: BillboardGui } = {}
+local _playerNametagDataCache = {}
 
 -- Cached template clone source. Resolved once in init().
 local _template: BillboardGui
@@ -79,48 +89,35 @@ local _template: BillboardGui
 -- TODO: wire to Remotes.luau once the network layer is set up.
 -- local _promptRemote: RemoteFunction
 
--- ─── Private: Template ───────────────────────────────────────────────────────
-
--- Resolves the template from the path string in NametagConstants.
-local function _getTemplate(): BillboardGui?
-	local root = ReplicatedStorage.Shared
-	for segment in NametagConstants.TEMPLATE_PATH:gmatch("[^.]+") do
-		root = root:FindFirstChild(segment)
-		if root == nil then
-			log:warn("NametagTemplate was not found")
-			return nil
-		end
-	end
-	
-	if not root:IsA("BillboardGui") then
-		log:warn("NametagTemplate found at root is not a BillboardGui")
-		return nil
-	end
-	return root :: BillboardGui
-end
-
 -- ─── Private: Billboard construction ────────────────────────────────────────
 
-local function _createBillboard(player: Player, character: Model): BillboardGui?
-	local head = character:FindFirstChild("Head") :: BasePart?
-	if head == nil then
-		log:warn("No Head found in character for {}", player.Name)
-		return nil
-	end
+local function _createBillboard(player: Player, character: Model)
+	local displayNameValue = scope:Value("")
+	local countryValue = scope:Value("")
+	local rankValue = scope:Value("")
+	local badgeImageId = scope:Value("")
 
-	local billboard = _template:Clone()
-	billboard.Adornee       = head
-	billboard.Size          = UDim2.fromScale(
-		NametagConstants.BILLBOARD_SIZE.X,
-		NametagConstants.BILLBOARD_SIZE.Y
-	)
-	billboard.StudsOffset   = NametagConstants.BILLBOARD_STUD_OFFSET
-	billboard.MaxDistance   = NametagConstants.BILLBOARD_MAX_DISTANCE
-	billboard.AlwaysOnTop   = false
-	billboard.Parent        = head
-	billboard.Enabled = true
-
-	return billboard
+	local NametagBillboard = NametagBillboardComponent(scope, {
+		Text = {
+			NameText = displayNameValue,
+			CountryText = countryValue,
+			RankText = rankValue
+		},
+		Image = {
+			BadgeImageId = badgeImageId
+		},
+		Player = player,
+		Parent = character:WaitForChild("Head"),
+		UIConstants = UIConstants
+	})
+	
+	return {
+		Billboard = NametagBillboard :: BillboardGui,
+		DisplayNameValue = displayNameValue,
+		CountryValue = countryValue,
+		RankValue = rankValue,
+		BadgeImageId = badgeImageId
+	}
 end
 
 -- ─── Private: Data resolution ────────────────────────────────────────────────
@@ -154,34 +151,11 @@ local function _find(billboard: BillboardGui, name: string): Instance?
 	return billboard:FindFirstChild(name, true)
 end
 
-local function _applyToBillboard(billboard: BillboardGui, data: NametagData)
-	-- Name label
-	local nameLabel = _find(billboard, "NameLabel") :: TextLabel?
-	if nameLabel then
-		nameLabel.Text = data.displayName
-		nameLabel.TextColor3 = data.nameColor
-	end
-
-	-- Country label
-	local countryLabel = _find(billboard, "CountryLabel") :: TextLabel?
-	if countryLabel then
-		countryLabel.Text = data.country
-	end
-
-	-- Rank label (hidden if empty)
-	local rankLabel = _find(billboard, "RankLabel") :: TextLabel?
-	if rankLabel then
-		rankLabel.Text    = data.rankLabel
-		rankLabel.Visible = data.rankLabel ~= ""
-	end
-
-	-- Badge icon (star for staff, rank image otherwise)
-	local badgeIcon = _find(billboard, "BadgeIcon") :: ImageLabel?
-	if badgeIcon then
-		badgeIcon.Visible    = data.badgeImageId ~= ""
-		badgeIcon.Image      = data.badgeImageId
-		badgeIcon.ImageColor3 = data.badgeColor
-	end
+local function _applyToBillboard(nametagData, data: NametagData)
+	nametagData.DisplayNameValue:set(data.displayName)
+	nametagData.CountryValue:set(data.country)
+	nametagData.RankValue:set(data.rankLabel)
+	nametagData.BadgeImageId:set(data.badgeImageId)
 end
 
 -- ─── Private: First-join prompt ──────────────────────────────────────────────
@@ -241,14 +215,14 @@ local function _onCharacterAdded(player: Player, character: Model)
 	taskDelay(0.1, function()
 		if not player:IsDescendantOf(Players) then return end
 
-		local billboard = _createBillboard(player, character)
-		if billboard == nil then return end
+		local nametagData = _createBillboard(player, character)
+		if nametagData == nil then return end
 
-		_billboards[player] = billboard
+		_playerNametagDataCache[player] = nametagData
 
 		-- Apply current data immediately.
 		local data = _resolveNametagData(player)
-		_applyToBillboard(billboard, data)
+		_applyToBillboard(nametagData, data)
 
 		log:debug("Billboard created for {}", player.Name)
 	end)
@@ -287,14 +261,14 @@ local NametagService = {}
 	  - VIPStatusChanged fires (AdminService handles the cascade)
 ]]
 function NametagService.refreshNametag(player: Player)
-	local billboard = _billboards[player]
-	if billboard == nil then
+	local nametagData = _playerNametagDataCache[player]
+	if nametagData == nil then
 		log:debug("refreshNametag called for {} but no billboard found", player.Name)
 		return
 	end
 
 	local data = _resolveNametagData(player)
-	_applyToBillboard(billboard, data)
+	_applyToBillboard(nametagData, data)
 end
 
 --[[
@@ -361,8 +335,6 @@ end
 -- ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 function NametagService.init()
-	_template = _getTemplate()
-
 	-- Re-apply nametag whenever AdminService resolves or refreshes a rank.
 	-- This covers: initial join, VIP purchase, staff status changes.
 	AdminService.RankResolved:Connect(function(player)
@@ -370,7 +342,7 @@ function NametagService.init()
 	end)
 
 	Players.PlayerRemoving:Connect(function(player)
-		_billboards[player] = nil
+		_playerNametagDataCache[player] = nil
 	end)
 
 	log:info("NametagService initialised")
@@ -387,6 +359,11 @@ function NametagService.start()
 			taskSpawn(_onPlayerReady, player)
 		end
 	end
+	
+	NametagDataChanged.OnServerEvent:Connect(function(player: Player, nametagData)
+		NametagService.setDisplayName(player, nametagData.DisplayName)
+		NametagService.setCountry(player, nametagData.CountryName)
+	end)
 
 	log:info("NametagService started")
 end

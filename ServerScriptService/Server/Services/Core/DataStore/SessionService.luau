@@ -150,14 +150,13 @@ local function _onPlayerAdded(player: Player)
 	-- Insert before firing so any PlayerReady handler that calls GetData
 	-- immediately gets a non-nil result.
 	_profiles[player] = profile
-
+	
 	log:info(
 		"Session ready for {} — join #{}, DataVersion {}",
 		player.Name,
 		profile.Data.Meta.JoinCount,
 		profile.Data.Meta.DataVersion
 	)
-
 	SessionService.PlayerReady:Fire(player)
 end
 
@@ -176,7 +175,7 @@ local function _updatePlayerReplica(player: Player, path: {string}, value: any)
 	local thisPlayerReplica = _playerReplicas[player]
 	
 	if thisPlayerReplica == nil then
-		log:error("Player Plum not found, Player: {}", player.Name)
+		log:debug("Player Plum not found, Player: {}", player.Name)
 		return
 	end
 
@@ -225,15 +224,15 @@ function SessionService.init()
 	for _, player in Players:GetPlayers() do
 		taskSpawn(_onPlayerAdded, player)
 	end
-	
+
+	Players.PlayerAdded:Connect(function(player)
+		taskSpawn(_onPlayerAdded, player)
+	end)
+
 	Replica.NewReadyPlayer:Connect(function(player)
 		local profile = SessionService.GetProfile(player)
 		local thisPlayerReplica = _makePlayerReplica(player, profile.Data)
 		_playerReplicas[player] = thisPlayerReplica
-	end)
-
-	Players.PlayerAdded:Connect(function(player)
-		taskSpawn(_onPlayerAdded, player)
 	end)
 
 	Players.PlayerRemoving:Connect(_onPlayerRemoving)

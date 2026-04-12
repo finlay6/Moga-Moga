@@ -20,14 +20,17 @@
 ]]
 
 local NametagConstants = {
-	COUNTRIES = {} :: {string}
+	COUNTRIES = {} :: {string},
+	UIConstants = {} :: {any}
 }
 
 -- ─── Billboard sizing ─────────────────────────────────────────────────────────
 
-NametagConstants.BILLBOARD_SIZE         = Vector2.new(5, 2)  -- scale
-NametagConstants.BILLBOARD_STUD_OFFSET  = Vector3.new(0, 2.5, 0)
-NametagConstants.BILLBOARD_MAX_DISTANCE = math.huge  -- studs
+NametagConstants.UIConstants = {
+	BILLBOARD_SIZE         = UDim2.fromScale(5, 2),  -- scale
+	BILLBOARD_STUD_OFFSET  = Vector3.new(0, 2.5, 0),
+	BILLBOARD_MAX_DISTANCE = math.huge  -- studs
+}
 
 -- ─── Template path ────────────────────────────────────────────────────────────
 -- Relative to ReplicatedStorage. NametagService resolves this on init.

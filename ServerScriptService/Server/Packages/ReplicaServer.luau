@@ -949,6 +949,7 @@ RemoteRequestData.OnServerEvent:Connect(function(player: Player)
 		return
 	end
 	
+	
 	-- Make the client create all replicas that are initially replicated to the client;
 	-- Pack up and send initially replicated replicas:
 	
@@ -957,10 +958,12 @@ RemoteRequestData.OnServerEvent:Connect(function(player: Player)
 	for replica in pairs(ReplicationAllReplicas) do
 		table.insert(creation, replica.creation)
 	end
+	
 	RemoteCreate:FireClient(player, creation)
 	
 	-- Let the client know that all replica data has been sent:
 	RemoteRequestData:FireClient(player)
+
 	
 	-- Set player to active:
 	ReadyPlayers[player] = true

@@ -48,7 +48,3 @@ ProductService.start()
 VIPService.start()
 AdminService.start()
 NametagService.start()
-
-task.wait(5)
-
-NametagService.setDisplayName(game.Players.SilentFish20, "Hey")

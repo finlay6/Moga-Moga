@@ -84,7 +84,7 @@ AdminConstants.RANKS = {
 	[90] = {
 		level        = 90,
 		label        = "Developer",
-		badgeImageId = "rbxassetid://9197710521",   -- replace with wrench asset
+		badgeImageId = "rbxthumb://type=Asset&id=9197710521%s&w=420&h=420",   -- replace with wrench asset
 		badgeColor   = Color3.fromRGB(180, 100, 255),
 		nameColor    = Color3.fromRGB(180, 100, 255),
 		canEditName  = true,
@@ -92,7 +92,7 @@ AdminConstants.RANKS = {
 	[100] = {
 		level        = 100,
 		label        = "Owner",
-		badgeImageId = "rbxassetid://11835491319",   -- replace with crown asset
+		badgeImageId = "rbxthumb://type=Asset&id=11835491319%s&w=420&h=420",   -- replace with crown asset
 		badgeColor   = Color3.fromRGB(255, 165, 0),
 		nameColor    = Color3.fromRGB(255, 165, 0),
 		canEditName  = true,
